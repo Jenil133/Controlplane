@@ -1,0 +1,17 @@
+# build output and locally installed tools
+/bin/
+/dist/
+
+# test artifacts
+*.test
+*.out
+coverage.*
+
+# editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# local env
+.env
