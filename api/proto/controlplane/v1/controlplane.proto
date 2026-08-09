@@ -1,0 +1,207 @@
+syntax = "proto3";
+
+package controlplane.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/Jenil133/Controlplane/gen/controlplane/v1;controlplanev1";
+
+// A Namespace groups the configuration consumed by one service or environment,
+// e.g. "checkout/prod". Every write inside a namespace bumps its revision by one.
+message Namespace {
+  string name = 1;
+  string description = 2;
+  int64 revision = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+// Config is an arbitrary JSON value addressed by key.
+message Config {
+  string key = 1;
+  google.protobuf.Value value = 2;
+  string description = 3;
+  // Namespace revision at which this entry last changed.
+  int64 revision = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  string updated_by = 6;
+}
+
+// Flag is a boolean feature flag.
+message Flag {
+  string key = 1;
+  bool enabled = 2;
+  string description = 3;
+  int64 revision = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  string updated_by = 6;
+}
+
+message Variant {
+  string name = 1;
+  // Relative weight. A variant receives weight / sum(weights) of enrolled users.
+  uint32 weight = 2;
+  // Optional variant-specific payload handed to the client with the assignment.
+  google.protobuf.Value payload = 3;
+}
+
+// Experiment is an A/B test definition. Clients assign users to variants
+// locally by hashing the salt and user ID, so assignment is stable everywhere.
+message Experiment {
+  string key = 1;
+  bool enabled = 2;
+  string description = 3;
+  // Hashing salt. Defaults to the experiment key when empty.
+  string salt = 4;
+  repeated Variant variants = 5;
+  int64 revision = 6;
+  google.protobuf.Timestamp updated_at = 7;
+  string updated_by = 8;
+}
+
+// Snapshot is the complete state of a namespace at one revision.
+message Snapshot {
+  string namespace = 1;
+  int64 revision = 2;
+  // Sorted by key.
+  repeated Config configs = 3;
+  repeated Flag flags = 4;
+  repeated Experiment experiments = 5;
+  // When the change that produced this revision was committed.
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+// AdminService mutates control plane state. Each successful write produces a
+// new namespace revision that is pushed to every watcher of that namespace.
+service AdminService {
+  rpc CreateNamespace(CreateNamespaceRequest) returns (CreateNamespaceResponse);
+  rpc GetNamespace(GetNamespaceRequest) returns (GetNamespaceResponse);
+  rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
+
+  rpc PutConfig(PutConfigRequest) returns (PutConfigResponse);
+  rpc DeleteConfig(DeleteConfigRequest) returns (DeleteConfigResponse);
+
+  rpc PutFlag(PutFlagRequest) returns (PutFlagResponse);
+  rpc DeleteFlag(DeleteFlagRequest) returns (DeleteFlagResponse);
+
+  rpc PutExperiment(PutExperimentRequest) returns (PutExperimentResponse);
+  rpc DeleteExperiment(DeleteExperimentRequest) returns (DeleteExperimentResponse);
+}
+
+message CreateNamespaceRequest {
+  string name = 1;
+  string description = 2;
+}
+
+message CreateNamespaceResponse {
+  Namespace namespace = 1;
+}
+
+message GetNamespaceRequest {
+  string name = 1;
+}
+
+message GetNamespaceResponse {
+  Namespace namespace = 1;
+}
+
+message ListNamespacesRequest {}
+
+message ListNamespacesResponse {
+  repeated Namespace namespaces = 1;
+}
+
+message PutConfigRequest {
+  string namespace = 1;
+  string key = 2;
+  google.protobuf.Value value = 3;
+  string description = 4;
+}
+
+message PutConfigResponse {
+  Config config = 1;
+}
+
+message DeleteConfigRequest {
+  string namespace = 1;
+  string key = 2;
+}
+
+message DeleteConfigResponse {
+  int64 revision = 1;
+}
+
+message PutFlagRequest {
+  string namespace = 1;
+  string key = 2;
+  bool enabled = 3;
+  string description = 4;
+}
+
+message PutFlagResponse {
+  Flag flag = 1;
+}
+
+message DeleteFlagRequest {
+  string namespace = 1;
+  string key = 2;
+}
+
+message DeleteFlagResponse {
+  int64 revision = 1;
+}
+
+message PutExperimentRequest {
+  string namespace = 1;
+  string key = 2;
+  bool enabled = 3;
+  string description = 4;
+  string salt = 5;
+  repeated Variant variants = 6;
+}
+
+message PutExperimentResponse {
+  Experiment experiment = 1;
+}
+
+message DeleteExperimentRequest {
+  string namespace = 1;
+  string key = 2;
+}
+
+message DeleteExperimentResponse {
+  int64 revision = 1;
+}
+
+// DistributionService is what client services talk to.
+service DistributionService {
+  // GetSnapshot returns the current state of a namespace.
+  rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
+
+  // Watch streams the namespace state. The first message is the current
+  // snapshot (skipped when the client already holds that revision); a new
+  // snapshot follows every change. When the server shuts down the stream ends
+  // with UNAVAILABLE and the client should reconnect.
+  rpc Watch(WatchRequest) returns (stream WatchResponse);
+}
+
+message GetSnapshotRequest {
+  string namespace = 1;
+}
+
+message GetSnapshotResponse {
+  Snapshot snapshot = 1;
+}
+
+message WatchRequest {
+  string namespace = 1;
+  // Revision the client already has, 0 if none.
+  int64 known_revision = 2;
+  // Free-form identifier used in server logs.
+  string client_id = 3;
+}
+
+message WatchResponse {
+  Snapshot snapshot = 1;
+}
