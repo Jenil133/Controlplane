@@ -1,0 +1,67 @@
+# Local development stack.
+#
+#   docker compose -f deploy/docker-compose.yml up -d --wait
+#       Postgres + Redis only, for running the server from source (make run).
+#
+#   docker compose -f deploy/docker-compose.yml --profile replicas up -d --build --wait
+#       Also two control plane replicas sharing Postgres and Redis:
+#       replica a on gRPC :9090, replica b on gRPC :9091.
+name: controlplane
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: controlplane
+      POSTGRES_PASSWORD: controlplane
+      POSTGRES_DB: controlplane
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U controlplane -d controlplane"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  controlplane-a: &controlplane
+    profiles: ["replicas"]
+    build:
+      context: ..
+    environment:
+      CONTROLPLANE_DATABASE_URL: postgres://controlplane:controlplane@postgres:5432/controlplane?sslmode=disable
+      CONTROLPLANE_REDIS_URL: redis://redis:6379/0
+      CONTROLPLANE_LOG_FORMAT: text
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "9090:9090"
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/cpctl", "--addr", "localhost:9090", "ns", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  controlplane-b:
+    <<: *controlplane
+    ports:
+      - "9091:9090"
+      - "8081:8080"
+
+volumes:
+  pgdata:

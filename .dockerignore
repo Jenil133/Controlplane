@@ -1,0 +1,7 @@
+.git
+bin
+dist
+plan
+deploy
+*.test
+*.out
