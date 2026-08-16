@@ -9,6 +9,7 @@ package controlplanev1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	structpb "google.golang.org/protobuf/types/known/structpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
@@ -23,6 +24,117 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type RolloutState int32
+
+const (
+	RolloutState_ROLLOUT_STATE_UNSPECIFIED RolloutState = 0
+	// Advancing automatically through stages that have a duration.
+	RolloutState_ROLLOUT_STATE_ACTIVE RolloutState = 1
+	// Holding at the current stage until resumed or advanced manually.
+	RolloutState_ROLLOUT_STATE_PAUSED RolloutState = 2
+	// Reached the final stage.
+	RolloutState_ROLLOUT_STATE_COMPLETED RolloutState = 3
+	// Stopped; rollout_percent was set to 0.
+	RolloutState_ROLLOUT_STATE_ABORTED RolloutState = 4
+)
+
+// Enum value maps for RolloutState.
+var (
+	RolloutState_name = map[int32]string{
+		0: "ROLLOUT_STATE_UNSPECIFIED",
+		1: "ROLLOUT_STATE_ACTIVE",
+		2: "ROLLOUT_STATE_PAUSED",
+		3: "ROLLOUT_STATE_COMPLETED",
+		4: "ROLLOUT_STATE_ABORTED",
+	}
+	RolloutState_value = map[string]int32{
+		"ROLLOUT_STATE_UNSPECIFIED": 0,
+		"ROLLOUT_STATE_ACTIVE":      1,
+		"ROLLOUT_STATE_PAUSED":      2,
+		"ROLLOUT_STATE_COMPLETED":   3,
+		"ROLLOUT_STATE_ABORTED":     4,
+	}
+)
+
+func (x RolloutState) Enum() *RolloutState {
+	p := new(RolloutState)
+	*p = x
+	return p
+}
+
+func (x RolloutState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RolloutState) Descriptor() protoreflect.EnumDescriptor {
+	return file_controlplane_v1_controlplane_proto_enumTypes[0].Descriptor()
+}
+
+func (RolloutState) Type() protoreflect.EnumType {
+	return &file_controlplane_v1_controlplane_proto_enumTypes[0]
+}
+
+func (x RolloutState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RolloutState.Descriptor instead.
+func (RolloutState) EnumDescriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{0}
+}
+
+type ChangeType int32
+
+const (
+	ChangeType_CHANGE_TYPE_UNSPECIFIED ChangeType = 0
+	ChangeType_CHANGE_TYPE_ADDED       ChangeType = 1
+	ChangeType_CHANGE_TYPE_MODIFIED    ChangeType = 2
+	ChangeType_CHANGE_TYPE_REMOVED     ChangeType = 3
+)
+
+// Enum value maps for ChangeType.
+var (
+	ChangeType_name = map[int32]string{
+		0: "CHANGE_TYPE_UNSPECIFIED",
+		1: "CHANGE_TYPE_ADDED",
+		2: "CHANGE_TYPE_MODIFIED",
+		3: "CHANGE_TYPE_REMOVED",
+	}
+	ChangeType_value = map[string]int32{
+		"CHANGE_TYPE_UNSPECIFIED": 0,
+		"CHANGE_TYPE_ADDED":       1,
+		"CHANGE_TYPE_MODIFIED":    2,
+		"CHANGE_TYPE_REMOVED":     3,
+	}
+)
+
+func (x ChangeType) Enum() *ChangeType {
+	p := new(ChangeType)
+	*p = x
+	return p
+}
+
+func (x ChangeType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ChangeType) Descriptor() protoreflect.EnumDescriptor {
+	return file_controlplane_v1_controlplane_proto_enumTypes[1].Descriptor()
+}
+
+func (ChangeType) Type() protoreflect.EnumType {
+	return &file_controlplane_v1_controlplane_proto_enumTypes[1]
+}
+
+func (x ChangeType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ChangeType.Descriptor instead.
+func (ChangeType) EnumDescriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{1}
+}
+
 // A Namespace groups the configuration consumed by one service or environment,
 // e.g. "checkout/prod". Every write inside a namespace bumps its revision by one.
 type Namespace struct {
@@ -32,6 +144,7 @@ type Namespace struct {
 	Revision      int64                  `protobuf:"varint,3,opt,name=revision,proto3" json:"revision,omitempty"`
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	CreatedBy     string                 `protobuf:"bytes,6,opt,name=created_by,json=createdBy,proto3" json:"created_by,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -99,6 +212,13 @@ func (x *Namespace) GetUpdatedAt() *timestamppb.Timestamp {
 		return x.UpdatedAt
 	}
 	return nil
+}
+
+func (x *Namespace) GetCreatedBy() string {
+	if x != nil {
+		return x.CreatedBy
+	}
+	return ""
 }
 
 // Config is an arbitrary JSON value addressed by key.
@@ -187,15 +307,32 @@ func (x *Config) GetUpdatedBy() string {
 	return ""
 }
 
-// Flag is a boolean feature flag.
+// Flag is a feature flag with an optional percentage rollout.
+//
+// Evaluation for a unit (user ID, account ID, ...):
+//  1. flag disabled                                -> off
+//  2. unit in allowlist                            -> on
+//  3. bucket(salt, unit) < round(rollout_percent * 100) -> on
+//     (buckets are 0..9999; round is half away from zero, clamped to
+//     [0, 10000]; pkg/bucketing documents the algorithm normatively)
+//
+// An empty unit ID is on only when rollout_percent is 100.
 type Flag struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	Enabled       bool                   `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
-	Revision      int64                  `protobuf:"varint,4,opt,name=revision,proto3" json:"revision,omitempty"`
-	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	UpdatedBy     string                 `protobuf:"bytes,6,opt,name=updated_by,json=updatedBy,proto3" json:"updated_by,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Key         string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Enabled     bool                   `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Description string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	Revision    int64                  `protobuf:"varint,4,opt,name=revision,proto3" json:"revision,omitempty"`
+	UpdatedAt   *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	UpdatedBy   string                 `protobuf:"bytes,6,opt,name=updated_by,json=updatedBy,proto3" json:"updated_by,omitempty"`
+	// Share of units, 0 to 100 in steps of 0.01, that see the flag on.
+	RolloutPercent float64 `protobuf:"fixed64,7,opt,name=rollout_percent,json=rolloutPercent,proto3" json:"rollout_percent,omitempty"`
+	// Hashing salt for rollout bucketing. Defaults to the flag key.
+	Salt string `protobuf:"bytes,8,opt,name=salt,proto3" json:"salt,omitempty"`
+	// Units that always see the flag on while it is enabled.
+	Allowlist []string `protobuf:"bytes,9,rep,name=allowlist,proto3" json:"allowlist,omitempty"`
+	// Staged rollout driving rollout_percent, if one was ever started.
+	Rollout       *RolloutPlan `protobuf:"bytes,10,opt,name=rollout,proto3" json:"rollout,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -272,6 +409,176 @@ func (x *Flag) GetUpdatedBy() string {
 	return ""
 }
 
+func (x *Flag) GetRolloutPercent() float64 {
+	if x != nil {
+		return x.RolloutPercent
+	}
+	return 0
+}
+
+func (x *Flag) GetSalt() string {
+	if x != nil {
+		return x.Salt
+	}
+	return ""
+}
+
+func (x *Flag) GetAllowlist() []string {
+	if x != nil {
+		return x.Allowlist
+	}
+	return nil
+}
+
+func (x *Flag) GetRollout() *RolloutPlan {
+	if x != nil {
+		return x.Rollout
+	}
+	return nil
+}
+
+type RolloutStage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Rollout percentage while this stage is current.
+	Percent float64 `protobuf:"fixed64,1,opt,name=percent,proto3" json:"percent,omitempty"`
+	// Minimum time at this stage before the controller advances automatically.
+	// Zero means the stage only advances manually.
+	Duration      *durationpb.Duration `protobuf:"bytes,2,opt,name=duration,proto3" json:"duration,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RolloutStage) Reset() {
+	*x = RolloutStage{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RolloutStage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RolloutStage) ProtoMessage() {}
+
+func (x *RolloutStage) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RolloutStage.ProtoReflect.Descriptor instead.
+func (*RolloutStage) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *RolloutStage) GetPercent() float64 {
+	if x != nil {
+		return x.Percent
+	}
+	return 0
+}
+
+func (x *RolloutStage) GetDuration() *durationpb.Duration {
+	if x != nil {
+		return x.Duration
+	}
+	return nil
+}
+
+// RolloutPlan steps a flag's rollout_percent through increasing stages.
+// While ACTIVE or PAUSED the plan owns rollout_percent.
+type RolloutPlan struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Stages []*RolloutStage        `protobuf:"bytes,1,rep,name=stages,proto3" json:"stages,omitempty"`
+	// Index into stages.
+	CurrentStage   int32                  `protobuf:"varint,2,opt,name=current_stage,json=currentStage,proto3" json:"current_stage,omitempty"`
+	State          RolloutState           `protobuf:"varint,3,opt,name=state,proto3,enum=controlplane.v1.RolloutState" json:"state,omitempty"`
+	StartedAt      *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	StageStartedAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=stage_started_at,json=stageStartedAt,proto3" json:"stage_started_at,omitempty"`
+	StartedBy      string                 `protobuf:"bytes,6,opt,name=started_by,json=startedBy,proto3" json:"started_by,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *RolloutPlan) Reset() {
+	*x = RolloutPlan{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RolloutPlan) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RolloutPlan) ProtoMessage() {}
+
+func (x *RolloutPlan) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RolloutPlan.ProtoReflect.Descriptor instead.
+func (*RolloutPlan) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *RolloutPlan) GetStages() []*RolloutStage {
+	if x != nil {
+		return x.Stages
+	}
+	return nil
+}
+
+func (x *RolloutPlan) GetCurrentStage() int32 {
+	if x != nil {
+		return x.CurrentStage
+	}
+	return 0
+}
+
+func (x *RolloutPlan) GetState() RolloutState {
+	if x != nil {
+		return x.State
+	}
+	return RolloutState_ROLLOUT_STATE_UNSPECIFIED
+}
+
+func (x *RolloutPlan) GetStartedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartedAt
+	}
+	return nil
+}
+
+func (x *RolloutPlan) GetStageStartedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StageStartedAt
+	}
+	return nil
+}
+
+func (x *RolloutPlan) GetStartedBy() string {
+	if x != nil {
+		return x.StartedBy
+	}
+	return ""
+}
+
 type Variant struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -285,7 +592,7 @@ type Variant struct {
 
 func (x *Variant) Reset() {
 	*x = Variant{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[3]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -297,7 +604,7 @@ func (x *Variant) String() string {
 func (*Variant) ProtoMessage() {}
 
 func (x *Variant) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[3]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -310,7 +617,7 @@ func (x *Variant) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Variant.ProtoReflect.Descriptor instead.
 func (*Variant) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{3}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Variant) GetName() string {
@@ -353,7 +660,7 @@ type Experiment struct {
 
 func (x *Experiment) Reset() {
 	*x = Experiment{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[4]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -365,7 +672,7 @@ func (x *Experiment) String() string {
 func (*Experiment) ProtoMessage() {}
 
 func (x *Experiment) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[4]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -378,7 +685,7 @@ func (x *Experiment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Experiment.ProtoReflect.Descriptor instead.
 func (*Experiment) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{4}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Experiment) GetKey() string {
@@ -437,24 +744,261 @@ func (x *Experiment) GetUpdatedBy() string {
 	return ""
 }
 
+// RateLimit is a token-bucket limit that every client instance enforces
+// locally for the matching key (for example a route or method name).
+type RateLimit struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Key         string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Enabled     bool                   `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Description string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	// Sustained rate: tokens added to the bucket per second.
+	RequestsPerSecond float64 `protobuf:"fixed64,4,opt,name=requests_per_second,json=requestsPerSecond,proto3" json:"requests_per_second,omitempty"`
+	// Bucket capacity: the largest burst allowed after a quiet period.
+	Burst         uint32                 `protobuf:"varint,5,opt,name=burst,proto3" json:"burst,omitempty"`
+	Revision      int64                  `protobuf:"varint,6,opt,name=revision,proto3" json:"revision,omitempty"`
+	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	UpdatedBy     string                 `protobuf:"bytes,8,opt,name=updated_by,json=updatedBy,proto3" json:"updated_by,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RateLimit) Reset() {
+	*x = RateLimit{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RateLimit) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RateLimit) ProtoMessage() {}
+
+func (x *RateLimit) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RateLimit.ProtoReflect.Descriptor instead.
+func (*RateLimit) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *RateLimit) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *RateLimit) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *RateLimit) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *RateLimit) GetRequestsPerSecond() float64 {
+	if x != nil {
+		return x.RequestsPerSecond
+	}
+	return 0
+}
+
+func (x *RateLimit) GetBurst() uint32 {
+	if x != nil {
+		return x.Burst
+	}
+	return 0
+}
+
+func (x *RateLimit) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *RateLimit) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
+func (x *RateLimit) GetUpdatedBy() string {
+	if x != nil {
+		return x.UpdatedBy
+	}
+	return ""
+}
+
+// CircuitBreaker opens when the failure rate over a rolling window reaches a
+// threshold, fails calls fast while open, then lets trial calls through.
+type CircuitBreaker struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Key         string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Enabled     bool                   `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Description string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	// Fraction of failed calls, 0 < x <= 1, that opens the breaker.
+	FailureRateThreshold float64 `protobuf:"fixed64,4,opt,name=failure_rate_threshold,json=failureRateThreshold,proto3" json:"failure_rate_threshold,omitempty"`
+	// Calls needed in the window before the failure rate is evaluated.
+	MinRequests uint32 `protobuf:"varint,5,opt,name=min_requests,json=minRequests,proto3" json:"min_requests,omitempty"`
+	// Rolling window over which calls are counted.
+	Window *durationpb.Duration `protobuf:"bytes,6,opt,name=window,proto3" json:"window,omitempty"`
+	// How long the breaker stays open before allowing trial calls.
+	OpenDuration *durationpb.Duration `protobuf:"bytes,7,opt,name=open_duration,json=openDuration,proto3" json:"open_duration,omitempty"`
+	// Trial calls allowed while half-open; all must succeed to close again.
+	HalfOpenMaxRequests uint32                 `protobuf:"varint,8,opt,name=half_open_max_requests,json=halfOpenMaxRequests,proto3" json:"half_open_max_requests,omitempty"`
+	Revision            int64                  `protobuf:"varint,9,opt,name=revision,proto3" json:"revision,omitempty"`
+	UpdatedAt           *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	UpdatedBy           string                 `protobuf:"bytes,11,opt,name=updated_by,json=updatedBy,proto3" json:"updated_by,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *CircuitBreaker) Reset() {
+	*x = CircuitBreaker{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CircuitBreaker) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CircuitBreaker) ProtoMessage() {}
+
+func (x *CircuitBreaker) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CircuitBreaker.ProtoReflect.Descriptor instead.
+func (*CircuitBreaker) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *CircuitBreaker) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *CircuitBreaker) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *CircuitBreaker) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *CircuitBreaker) GetFailureRateThreshold() float64 {
+	if x != nil {
+		return x.FailureRateThreshold
+	}
+	return 0
+}
+
+func (x *CircuitBreaker) GetMinRequests() uint32 {
+	if x != nil {
+		return x.MinRequests
+	}
+	return 0
+}
+
+func (x *CircuitBreaker) GetWindow() *durationpb.Duration {
+	if x != nil {
+		return x.Window
+	}
+	return nil
+}
+
+func (x *CircuitBreaker) GetOpenDuration() *durationpb.Duration {
+	if x != nil {
+		return x.OpenDuration
+	}
+	return nil
+}
+
+func (x *CircuitBreaker) GetHalfOpenMaxRequests() uint32 {
+	if x != nil {
+		return x.HalfOpenMaxRequests
+	}
+	return 0
+}
+
+func (x *CircuitBreaker) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *CircuitBreaker) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
+func (x *CircuitBreaker) GetUpdatedBy() string {
+	if x != nil {
+		return x.UpdatedBy
+	}
+	return ""
+}
+
 // Snapshot is the complete state of a namespace at one revision.
 type Snapshot struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Namespace string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
 	Revision  int64                  `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
-	// Sorted by key.
+	// Every list is sorted by key.
 	Configs     []*Config     `protobuf:"bytes,3,rep,name=configs,proto3" json:"configs,omitempty"`
 	Flags       []*Flag       `protobuf:"bytes,4,rep,name=flags,proto3" json:"flags,omitempty"`
 	Experiments []*Experiment `protobuf:"bytes,5,rep,name=experiments,proto3" json:"experiments,omitempty"`
 	// When the change that produced this revision was committed.
-	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	RateLimits      []*RateLimit           `protobuf:"bytes,7,rep,name=rate_limits,json=rateLimits,proto3" json:"rate_limits,omitempty"`
+	CircuitBreakers []*CircuitBreaker      `protobuf:"bytes,8,rep,name=circuit_breakers,json=circuitBreakers,proto3" json:"circuit_breakers,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Snapshot) Reset() {
 	*x = Snapshot{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[5]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -466,7 +1010,7 @@ func (x *Snapshot) String() string {
 func (*Snapshot) ProtoMessage() {}
 
 func (x *Snapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[5]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -479,7 +1023,7 @@ func (x *Snapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Snapshot.ProtoReflect.Descriptor instead.
 func (*Snapshot) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{5}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *Snapshot) GetNamespace() string {
@@ -524,6 +1068,316 @@ func (x *Snapshot) GetUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Snapshot) GetRateLimits() []*RateLimit {
+	if x != nil {
+		return x.RateLimits
+	}
+	return nil
+}
+
+func (x *Snapshot) GetCircuitBreakers() []*CircuitBreaker {
+	if x != nil {
+		return x.CircuitBreakers
+	}
+	return nil
+}
+
+// Change describes how one entry differs between two states of a namespace.
+type Change struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// config, flag, experiment, rate_limit or circuit_breaker.
+	EntityType string     `protobuf:"bytes,1,opt,name=entity_type,json=entityType,proto3" json:"entity_type,omitempty"`
+	Key        string     `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Type       ChangeType `protobuf:"varint,3,opt,name=type,proto3,enum=controlplane.v1.ChangeType" json:"type,omitempty"`
+	// The entry as stored (snake_case JSON). Absent when added.
+	Before *structpb.Value `protobuf:"bytes,4,opt,name=before,proto3" json:"before,omitempty"`
+	// Absent when removed.
+	After         *structpb.Value `protobuf:"bytes,5,opt,name=after,proto3" json:"after,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Change) Reset() {
+	*x = Change{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Change) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Change) ProtoMessage() {}
+
+func (x *Change) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Change.ProtoReflect.Descriptor instead.
+func (*Change) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *Change) GetEntityType() string {
+	if x != nil {
+		return x.EntityType
+	}
+	return ""
+}
+
+func (x *Change) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *Change) GetType() ChangeType {
+	if x != nil {
+		return x.Type
+	}
+	return ChangeType_CHANGE_TYPE_UNSPECIFIED
+}
+
+func (x *Change) GetBefore() *structpb.Value {
+	if x != nil {
+		return x.Before
+	}
+	return nil
+}
+
+func (x *Change) GetAfter() *structpb.Value {
+	if x != nil {
+		return x.After
+	}
+	return nil
+}
+
+// Revision is one entry in a namespace's history.
+type Revision struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Namespace string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Revision  int64                  `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
+	Actor     string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
+	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	// Human-readable summary, e.g. "update flag new-cart" or "rollback to revision 7".
+	Summary string `protobuf:"bytes,5,opt,name=summary,proto3" json:"summary,omitempty"`
+	// Full namespace state at this revision. Only set by GetRevision.
+	Snapshot      *Snapshot `protobuf:"bytes,6,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Revision) Reset() {
+	*x = Revision{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Revision) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Revision) ProtoMessage() {}
+
+func (x *Revision) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Revision.ProtoReflect.Descriptor instead.
+func (*Revision) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *Revision) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *Revision) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *Revision) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *Revision) GetCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return nil
+}
+
+func (x *Revision) GetSummary() string {
+	if x != nil {
+		return x.Summary
+	}
+	return ""
+}
+
+func (x *Revision) GetSnapshot() *Snapshot {
+	if x != nil {
+		return x.Snapshot
+	}
+	return nil
+}
+
+// AuditEvent records one change: who made it, when, and what it changed.
+type AuditEvent struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Id        int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Namespace string                 `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Revision  int64                  `protobuf:"varint,3,opt,name=revision,proto3" json:"revision,omitempty"`
+	Actor     string                 `protobuf:"bytes,4,opt,name=actor,proto3" json:"actor,omitempty"`
+	Time      *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=time,proto3" json:"time,omitempty"`
+	// create, update, delete, rollback, rollout.start, rollout.advance,
+	// rollout.pause, rollout.resume or rollout.abort.
+	Action string `protobuf:"bytes,6,opt,name=action,proto3" json:"action,omitempty"`
+	// namespace, config, flag, experiment, rate_limit or circuit_breaker.
+	EntityType string `protobuf:"bytes,7,opt,name=entity_type,json=entityType,proto3" json:"entity_type,omitempty"`
+	EntityKey  string `protobuf:"bytes,8,opt,name=entity_key,json=entityKey,proto3" json:"entity_key,omitempty"`
+	// The entry before and after the change (snake_case JSON).
+	Before        *structpb.Value `protobuf:"bytes,9,opt,name=before,proto3" json:"before,omitempty"`
+	After         *structpb.Value `protobuf:"bytes,10,opt,name=after,proto3" json:"after,omitempty"`
+	Message       string          `protobuf:"bytes,11,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AuditEvent) Reset() {
+	*x = AuditEvent{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuditEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuditEvent) ProtoMessage() {}
+
+func (x *AuditEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuditEvent.ProtoReflect.Descriptor instead.
+func (*AuditEvent) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *AuditEvent) GetId() int64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *AuditEvent) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *AuditEvent) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Time
+	}
+	return nil
+}
+
+func (x *AuditEvent) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetEntityType() string {
+	if x != nil {
+		return x.EntityType
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetEntityKey() string {
+	if x != nil {
+		return x.EntityKey
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetBefore() *structpb.Value {
+	if x != nil {
+		return x.Before
+	}
+	return nil
+}
+
+func (x *AuditEvent) GetAfter() *structpb.Value {
+	if x != nil {
+		return x.After
+	}
+	return nil
+}
+
+func (x *AuditEvent) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 type CreateNamespaceRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -534,7 +1388,7 @@ type CreateNamespaceRequest struct {
 
 func (x *CreateNamespaceRequest) Reset() {
 	*x = CreateNamespaceRequest{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[6]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -546,7 +1400,7 @@ func (x *CreateNamespaceRequest) String() string {
 func (*CreateNamespaceRequest) ProtoMessage() {}
 
 func (x *CreateNamespaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[6]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -559,7 +1413,7 @@ func (x *CreateNamespaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateNamespaceRequest.ProtoReflect.Descriptor instead.
 func (*CreateNamespaceRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{6}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CreateNamespaceRequest) GetName() string {
@@ -585,7 +1439,7 @@ type CreateNamespaceResponse struct {
 
 func (x *CreateNamespaceResponse) Reset() {
 	*x = CreateNamespaceResponse{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[7]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -597,7 +1451,7 @@ func (x *CreateNamespaceResponse) String() string {
 func (*CreateNamespaceResponse) ProtoMessage() {}
 
 func (x *CreateNamespaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[7]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -610,7 +1464,7 @@ func (x *CreateNamespaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateNamespaceResponse.ProtoReflect.Descriptor instead.
 func (*CreateNamespaceResponse) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{7}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CreateNamespaceResponse) GetNamespace() *Namespace {
@@ -629,7 +1483,7 @@ type GetNamespaceRequest struct {
 
 func (x *GetNamespaceRequest) Reset() {
 	*x = GetNamespaceRequest{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[8]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -641,7 +1495,7 @@ func (x *GetNamespaceRequest) String() string {
 func (*GetNamespaceRequest) ProtoMessage() {}
 
 func (x *GetNamespaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[8]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -654,7 +1508,7 @@ func (x *GetNamespaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNamespaceRequest.ProtoReflect.Descriptor instead.
 func (*GetNamespaceRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{8}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *GetNamespaceRequest) GetName() string {
@@ -673,7 +1527,7 @@ type GetNamespaceResponse struct {
 
 func (x *GetNamespaceResponse) Reset() {
 	*x = GetNamespaceResponse{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[9]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -685,7 +1539,7 @@ func (x *GetNamespaceResponse) String() string {
 func (*GetNamespaceResponse) ProtoMessage() {}
 
 func (x *GetNamespaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[9]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -698,7 +1552,7 @@ func (x *GetNamespaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNamespaceResponse.ProtoReflect.Descriptor instead.
 func (*GetNamespaceResponse) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{9}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *GetNamespaceResponse) GetNamespace() *Namespace {
@@ -716,7 +1570,7 @@ type ListNamespacesRequest struct {
 
 func (x *ListNamespacesRequest) Reset() {
 	*x = ListNamespacesRequest{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[10]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -728,7 +1582,7 @@ func (x *ListNamespacesRequest) String() string {
 func (*ListNamespacesRequest) ProtoMessage() {}
 
 func (x *ListNamespacesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[10]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -741,7 +1595,7 @@ func (x *ListNamespacesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNamespacesRequest.ProtoReflect.Descriptor instead.
 func (*ListNamespacesRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{10}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{17}
 }
 
 type ListNamespacesResponse struct {
@@ -753,7 +1607,7 @@ type ListNamespacesResponse struct {
 
 func (x *ListNamespacesResponse) Reset() {
 	*x = ListNamespacesResponse{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[11]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -765,7 +1619,7 @@ func (x *ListNamespacesResponse) String() string {
 func (*ListNamespacesResponse) ProtoMessage() {}
 
 func (x *ListNamespacesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[11]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -778,7 +1632,7 @@ func (x *ListNamespacesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNamespacesResponse.ProtoReflect.Descriptor instead.
 func (*ListNamespacesResponse) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{11}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ListNamespacesResponse) GetNamespaces() []*Namespace {
@@ -789,18 +1643,19 @@ func (x *ListNamespacesResponse) GetNamespaces() []*Namespace {
 }
 
 type PutConfigRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	Value         *structpb.Value        `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
-	Description   string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Namespace        string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Key              string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Value            *structpb.Value        `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
+	Description      string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
+	ExpectedRevision int64                  `protobuf:"varint,5,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *PutConfigRequest) Reset() {
 	*x = PutConfigRequest{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[12]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -812,7 +1667,7 @@ func (x *PutConfigRequest) String() string {
 func (*PutConfigRequest) ProtoMessage() {}
 
 func (x *PutConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[12]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -825,7 +1680,7 @@ func (x *PutConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutConfigRequest.ProtoReflect.Descriptor instead.
 func (*PutConfigRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{12}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *PutConfigRequest) GetNamespace() string {
@@ -856,6 +1711,13 @@ func (x *PutConfigRequest) GetDescription() string {
 	return ""
 }
 
+func (x *PutConfigRequest) GetExpectedRevision() int64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
 type PutConfigResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Config        *Config                `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
@@ -865,7 +1727,7 @@ type PutConfigResponse struct {
 
 func (x *PutConfigResponse) Reset() {
 	*x = PutConfigResponse{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[13]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -877,7 +1739,7 @@ func (x *PutConfigResponse) String() string {
 func (*PutConfigResponse) ProtoMessage() {}
 
 func (x *PutConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[13]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -890,7 +1752,7 @@ func (x *PutConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutConfigResponse.ProtoReflect.Descriptor instead.
 func (*PutConfigResponse) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{13}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *PutConfigResponse) GetConfig() *Config {
@@ -901,16 +1763,17 @@ func (x *PutConfigResponse) GetConfig() *Config {
 }
 
 type DeleteConfigRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Namespace        string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Key              string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	ExpectedRevision int64                  `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *DeleteConfigRequest) Reset() {
 	*x = DeleteConfigRequest{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[14]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -922,7 +1785,7 @@ func (x *DeleteConfigRequest) String() string {
 func (*DeleteConfigRequest) ProtoMessage() {}
 
 func (x *DeleteConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[14]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -935,7 +1798,7 @@ func (x *DeleteConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteConfigRequest.ProtoReflect.Descriptor instead.
 func (*DeleteConfigRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{14}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *DeleteConfigRequest) GetNamespace() string {
@@ -952,6 +1815,13 @@ func (x *DeleteConfigRequest) GetKey() string {
 	return ""
 }
 
+func (x *DeleteConfigRequest) GetExpectedRevision() int64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
 type DeleteConfigResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Revision      int64                  `protobuf:"varint,1,opt,name=revision,proto3" json:"revision,omitempty"`
@@ -961,7 +1831,7 @@ type DeleteConfigResponse struct {
 
 func (x *DeleteConfigResponse) Reset() {
 	*x = DeleteConfigResponse{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[15]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -973,7 +1843,7 @@ func (x *DeleteConfigResponse) String() string {
 func (*DeleteConfigResponse) ProtoMessage() {}
 
 func (x *DeleteConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[15]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -986,7 +1856,7 @@ func (x *DeleteConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteConfigResponse.ProtoReflect.Descriptor instead.
 func (*DeleteConfigResponse) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{15}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *DeleteConfigResponse) GetRevision() int64 {
@@ -997,18 +1867,26 @@ func (x *DeleteConfigResponse) GetRevision() int64 {
 }
 
 type PutFlagRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	Enabled       bool                   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	Description   string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Namespace        string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Key              string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Enabled          bool                   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Description      string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
+	ExpectedRevision int64                  `protobuf:"varint,5,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	// Unset keeps the current value (100 for a new flag). Must not change while
+	// a rollout is ACTIVE or PAUSED.
+	RolloutPercent *float64 `protobuf:"fixed64,6,opt,name=rollout_percent,json=rolloutPercent,proto3,oneof" json:"rollout_percent,omitempty"`
+	// Empty keeps the current salt (the key for a new flag).
+	Salt string `protobuf:"bytes,7,opt,name=salt,proto3" json:"salt,omitempty"`
+	// Replaces the allowlist.
+	Allowlist     []string `protobuf:"bytes,8,rep,name=allowlist,proto3" json:"allowlist,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PutFlagRequest) Reset() {
 	*x = PutFlagRequest{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[16]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1020,7 +1898,7 @@ func (x *PutFlagRequest) String() string {
 func (*PutFlagRequest) ProtoMessage() {}
 
 func (x *PutFlagRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[16]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1033,7 +1911,7 @@ func (x *PutFlagRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutFlagRequest.ProtoReflect.Descriptor instead.
 func (*PutFlagRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{16}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *PutFlagRequest) GetNamespace() string {
@@ -1064,6 +1942,34 @@ func (x *PutFlagRequest) GetDescription() string {
 	return ""
 }
 
+func (x *PutFlagRequest) GetExpectedRevision() int64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
+func (x *PutFlagRequest) GetRolloutPercent() float64 {
+	if x != nil && x.RolloutPercent != nil {
+		return *x.RolloutPercent
+	}
+	return 0
+}
+
+func (x *PutFlagRequest) GetSalt() string {
+	if x != nil {
+		return x.Salt
+	}
+	return ""
+}
+
+func (x *PutFlagRequest) GetAllowlist() []string {
+	if x != nil {
+		return x.Allowlist
+	}
+	return nil
+}
+
 type PutFlagResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Flag          *Flag                  `protobuf:"bytes,1,opt,name=flag,proto3" json:"flag,omitempty"`
@@ -1073,7 +1979,7 @@ type PutFlagResponse struct {
 
 func (x *PutFlagResponse) Reset() {
 	*x = PutFlagResponse{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[17]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1085,7 +1991,7 @@ func (x *PutFlagResponse) String() string {
 func (*PutFlagResponse) ProtoMessage() {}
 
 func (x *PutFlagResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[17]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1098,7 +2004,7 @@ func (x *PutFlagResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutFlagResponse.ProtoReflect.Descriptor instead.
 func (*PutFlagResponse) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{17}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *PutFlagResponse) GetFlag() *Flag {
@@ -1109,16 +2015,17 @@ func (x *PutFlagResponse) GetFlag() *Flag {
 }
 
 type DeleteFlagRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Namespace        string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Key              string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	ExpectedRevision int64                  `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *DeleteFlagRequest) Reset() {
 	*x = DeleteFlagRequest{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[18]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1130,7 +2037,7 @@ func (x *DeleteFlagRequest) String() string {
 func (*DeleteFlagRequest) ProtoMessage() {}
 
 func (x *DeleteFlagRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[18]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1143,7 +2050,7 @@ func (x *DeleteFlagRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteFlagRequest.ProtoReflect.Descriptor instead.
 func (*DeleteFlagRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{18}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *DeleteFlagRequest) GetNamespace() string {
@@ -1160,6 +2067,13 @@ func (x *DeleteFlagRequest) GetKey() string {
 	return ""
 }
 
+func (x *DeleteFlagRequest) GetExpectedRevision() int64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
 type DeleteFlagResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Revision      int64                  `protobuf:"varint,1,opt,name=revision,proto3" json:"revision,omitempty"`
@@ -1169,7 +2083,7 @@ type DeleteFlagResponse struct {
 
 func (x *DeleteFlagResponse) Reset() {
 	*x = DeleteFlagResponse{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[19]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1181,7 +2095,7 @@ func (x *DeleteFlagResponse) String() string {
 func (*DeleteFlagResponse) ProtoMessage() {}
 
 func (x *DeleteFlagResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[19]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1194,7 +2108,7 @@ func (x *DeleteFlagResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteFlagResponse.ProtoReflect.Descriptor instead.
 func (*DeleteFlagResponse) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{19}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *DeleteFlagResponse) GetRevision() int64 {
@@ -1205,20 +2119,21 @@ func (x *DeleteFlagResponse) GetRevision() int64 {
 }
 
 type PutExperimentRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	Enabled       bool                   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	Description   string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
-	Salt          string                 `protobuf:"bytes,5,opt,name=salt,proto3" json:"salt,omitempty"`
-	Variants      []*Variant             `protobuf:"bytes,6,rep,name=variants,proto3" json:"variants,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Namespace        string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Key              string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Enabled          bool                   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Description      string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
+	Salt             string                 `protobuf:"bytes,5,opt,name=salt,proto3" json:"salt,omitempty"`
+	Variants         []*Variant             `protobuf:"bytes,6,rep,name=variants,proto3" json:"variants,omitempty"`
+	ExpectedRevision int64                  `protobuf:"varint,7,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *PutExperimentRequest) Reset() {
 	*x = PutExperimentRequest{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[20]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1230,7 +2145,7 @@ func (x *PutExperimentRequest) String() string {
 func (*PutExperimentRequest) ProtoMessage() {}
 
 func (x *PutExperimentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[20]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1243,7 +2158,7 @@ func (x *PutExperimentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutExperimentRequest.ProtoReflect.Descriptor instead.
 func (*PutExperimentRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{20}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *PutExperimentRequest) GetNamespace() string {
@@ -1288,6 +2203,13 @@ func (x *PutExperimentRequest) GetVariants() []*Variant {
 	return nil
 }
 
+func (x *PutExperimentRequest) GetExpectedRevision() int64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
 type PutExperimentResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Experiment    *Experiment            `protobuf:"bytes,1,opt,name=experiment,proto3" json:"experiment,omitempty"`
@@ -1297,7 +2219,7 @@ type PutExperimentResponse struct {
 
 func (x *PutExperimentResponse) Reset() {
 	*x = PutExperimentResponse{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[21]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1309,7 +2231,7 @@ func (x *PutExperimentResponse) String() string {
 func (*PutExperimentResponse) ProtoMessage() {}
 
 func (x *PutExperimentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[21]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1322,7 +2244,7 @@ func (x *PutExperimentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutExperimentResponse.ProtoReflect.Descriptor instead.
 func (*PutExperimentResponse) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{21}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *PutExperimentResponse) GetExperiment() *Experiment {
@@ -1333,16 +2255,17 @@ func (x *PutExperimentResponse) GetExperiment() *Experiment {
 }
 
 type DeleteExperimentRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Namespace        string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Key              string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	ExpectedRevision int64                  `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *DeleteExperimentRequest) Reset() {
 	*x = DeleteExperimentRequest{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[22]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1354,7 +2277,7 @@ func (x *DeleteExperimentRequest) String() string {
 func (*DeleteExperimentRequest) ProtoMessage() {}
 
 func (x *DeleteExperimentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[22]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1367,7 +2290,7 @@ func (x *DeleteExperimentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteExperimentRequest.ProtoReflect.Descriptor instead.
 func (*DeleteExperimentRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{22}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *DeleteExperimentRequest) GetNamespace() string {
@@ -1384,6 +2307,13 @@ func (x *DeleteExperimentRequest) GetKey() string {
 	return ""
 }
 
+func (x *DeleteExperimentRequest) GetExpectedRevision() int64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
 type DeleteExperimentResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Revision      int64                  `protobuf:"varint,1,opt,name=revision,proto3" json:"revision,omitempty"`
@@ -1393,7 +2323,7 @@ type DeleteExperimentResponse struct {
 
 func (x *DeleteExperimentResponse) Reset() {
 	*x = DeleteExperimentResponse{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[23]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1405,7 +2335,7 @@ func (x *DeleteExperimentResponse) String() string {
 func (*DeleteExperimentResponse) ProtoMessage() {}
 
 func (x *DeleteExperimentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[23]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1418,7 +2348,7 @@ func (x *DeleteExperimentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteExperimentResponse.ProtoReflect.Descriptor instead.
 func (*DeleteExperimentResponse) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{23}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *DeleteExperimentResponse) GetRevision() int64 {
@@ -1426,6 +2356,1590 @@ func (x *DeleteExperimentResponse) GetRevision() int64 {
 		return x.Revision
 	}
 	return 0
+}
+
+type PutRateLimitRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Namespace         string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Key               string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Enabled           bool                   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Description       string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
+	RequestsPerSecond float64                `protobuf:"fixed64,5,opt,name=requests_per_second,json=requestsPerSecond,proto3" json:"requests_per_second,omitempty"`
+	Burst             uint32                 `protobuf:"varint,6,opt,name=burst,proto3" json:"burst,omitempty"`
+	ExpectedRevision  int64                  `protobuf:"varint,7,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *PutRateLimitRequest) Reset() {
+	*x = PutRateLimitRequest{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PutRateLimitRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PutRateLimitRequest) ProtoMessage() {}
+
+func (x *PutRateLimitRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PutRateLimitRequest.ProtoReflect.Descriptor instead.
+func (*PutRateLimitRequest) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *PutRateLimitRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *PutRateLimitRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *PutRateLimitRequest) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *PutRateLimitRequest) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *PutRateLimitRequest) GetRequestsPerSecond() float64 {
+	if x != nil {
+		return x.RequestsPerSecond
+	}
+	return 0
+}
+
+func (x *PutRateLimitRequest) GetBurst() uint32 {
+	if x != nil {
+		return x.Burst
+	}
+	return 0
+}
+
+func (x *PutRateLimitRequest) GetExpectedRevision() int64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
+type PutRateLimitResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RateLimit     *RateLimit             `protobuf:"bytes,1,opt,name=rate_limit,json=rateLimit,proto3" json:"rate_limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PutRateLimitResponse) Reset() {
+	*x = PutRateLimitResponse{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PutRateLimitResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PutRateLimitResponse) ProtoMessage() {}
+
+func (x *PutRateLimitResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PutRateLimitResponse.ProtoReflect.Descriptor instead.
+func (*PutRateLimitResponse) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *PutRateLimitResponse) GetRateLimit() *RateLimit {
+	if x != nil {
+		return x.RateLimit
+	}
+	return nil
+}
+
+type DeleteRateLimitRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Namespace        string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Key              string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	ExpectedRevision int64                  `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *DeleteRateLimitRequest) Reset() {
+	*x = DeleteRateLimitRequest{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteRateLimitRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteRateLimitRequest) ProtoMessage() {}
+
+func (x *DeleteRateLimitRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteRateLimitRequest.ProtoReflect.Descriptor instead.
+func (*DeleteRateLimitRequest) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *DeleteRateLimitRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *DeleteRateLimitRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *DeleteRateLimitRequest) GetExpectedRevision() int64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
+type DeleteRateLimitResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Revision      int64                  `protobuf:"varint,1,opt,name=revision,proto3" json:"revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteRateLimitResponse) Reset() {
+	*x = DeleteRateLimitResponse{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteRateLimitResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteRateLimitResponse) ProtoMessage() {}
+
+func (x *DeleteRateLimitResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteRateLimitResponse.ProtoReflect.Descriptor instead.
+func (*DeleteRateLimitResponse) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *DeleteRateLimitResponse) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+type PutCircuitBreakerRequest struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	Namespace            string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Key                  string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Enabled              bool                   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Description          string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
+	FailureRateThreshold float64                `protobuf:"fixed64,5,opt,name=failure_rate_threshold,json=failureRateThreshold,proto3" json:"failure_rate_threshold,omitempty"`
+	MinRequests          uint32                 `protobuf:"varint,6,opt,name=min_requests,json=minRequests,proto3" json:"min_requests,omitempty"`
+	Window               *durationpb.Duration   `protobuf:"bytes,7,opt,name=window,proto3" json:"window,omitempty"`
+	OpenDuration         *durationpb.Duration   `protobuf:"bytes,8,opt,name=open_duration,json=openDuration,proto3" json:"open_duration,omitempty"`
+	HalfOpenMaxRequests  uint32                 `protobuf:"varint,9,opt,name=half_open_max_requests,json=halfOpenMaxRequests,proto3" json:"half_open_max_requests,omitempty"`
+	ExpectedRevision     int64                  `protobuf:"varint,10,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *PutCircuitBreakerRequest) Reset() {
+	*x = PutCircuitBreakerRequest{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PutCircuitBreakerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PutCircuitBreakerRequest) ProtoMessage() {}
+
+func (x *PutCircuitBreakerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PutCircuitBreakerRequest.ProtoReflect.Descriptor instead.
+func (*PutCircuitBreakerRequest) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *PutCircuitBreakerRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *PutCircuitBreakerRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *PutCircuitBreakerRequest) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *PutCircuitBreakerRequest) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *PutCircuitBreakerRequest) GetFailureRateThreshold() float64 {
+	if x != nil {
+		return x.FailureRateThreshold
+	}
+	return 0
+}
+
+func (x *PutCircuitBreakerRequest) GetMinRequests() uint32 {
+	if x != nil {
+		return x.MinRequests
+	}
+	return 0
+}
+
+func (x *PutCircuitBreakerRequest) GetWindow() *durationpb.Duration {
+	if x != nil {
+		return x.Window
+	}
+	return nil
+}
+
+func (x *PutCircuitBreakerRequest) GetOpenDuration() *durationpb.Duration {
+	if x != nil {
+		return x.OpenDuration
+	}
+	return nil
+}
+
+func (x *PutCircuitBreakerRequest) GetHalfOpenMaxRequests() uint32 {
+	if x != nil {
+		return x.HalfOpenMaxRequests
+	}
+	return 0
+}
+
+func (x *PutCircuitBreakerRequest) GetExpectedRevision() int64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
+type PutCircuitBreakerResponse struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	CircuitBreaker *CircuitBreaker        `protobuf:"bytes,1,opt,name=circuit_breaker,json=circuitBreaker,proto3" json:"circuit_breaker,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *PutCircuitBreakerResponse) Reset() {
+	*x = PutCircuitBreakerResponse{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PutCircuitBreakerResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PutCircuitBreakerResponse) ProtoMessage() {}
+
+func (x *PutCircuitBreakerResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PutCircuitBreakerResponse.ProtoReflect.Descriptor instead.
+func (*PutCircuitBreakerResponse) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *PutCircuitBreakerResponse) GetCircuitBreaker() *CircuitBreaker {
+	if x != nil {
+		return x.CircuitBreaker
+	}
+	return nil
+}
+
+type DeleteCircuitBreakerRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Namespace        string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Key              string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	ExpectedRevision int64                  `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *DeleteCircuitBreakerRequest) Reset() {
+	*x = DeleteCircuitBreakerRequest{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteCircuitBreakerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteCircuitBreakerRequest) ProtoMessage() {}
+
+func (x *DeleteCircuitBreakerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteCircuitBreakerRequest.ProtoReflect.Descriptor instead.
+func (*DeleteCircuitBreakerRequest) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *DeleteCircuitBreakerRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *DeleteCircuitBreakerRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *DeleteCircuitBreakerRequest) GetExpectedRevision() int64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
+type DeleteCircuitBreakerResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Revision      int64                  `protobuf:"varint,1,opt,name=revision,proto3" json:"revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteCircuitBreakerResponse) Reset() {
+	*x = DeleteCircuitBreakerResponse{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteCircuitBreakerResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteCircuitBreakerResponse) ProtoMessage() {}
+
+func (x *DeleteCircuitBreakerResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteCircuitBreakerResponse.ProtoReflect.Descriptor instead.
+func (*DeleteCircuitBreakerResponse) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *DeleteCircuitBreakerResponse) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+type StartRolloutRequest struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Namespace string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Flag      string                 `protobuf:"bytes,2,opt,name=flag,proto3" json:"flag,omitempty"`
+	// At least one stage; percentages must not decrease.
+	Stages        []*RolloutStage `protobuf:"bytes,3,rep,name=stages,proto3" json:"stages,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartRolloutRequest) Reset() {
+	*x = StartRolloutRequest{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartRolloutRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartRolloutRequest) ProtoMessage() {}
+
+func (x *StartRolloutRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartRolloutRequest.ProtoReflect.Descriptor instead.
+func (*StartRolloutRequest) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *StartRolloutRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *StartRolloutRequest) GetFlag() string {
+	if x != nil {
+		return x.Flag
+	}
+	return ""
+}
+
+func (x *StartRolloutRequest) GetStages() []*RolloutStage {
+	if x != nil {
+		return x.Stages
+	}
+	return nil
+}
+
+type StartRolloutResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Flag          *Flag                  `protobuf:"bytes,1,opt,name=flag,proto3" json:"flag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartRolloutResponse) Reset() {
+	*x = StartRolloutResponse{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartRolloutResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartRolloutResponse) ProtoMessage() {}
+
+func (x *StartRolloutResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartRolloutResponse.ProtoReflect.Descriptor instead.
+func (*StartRolloutResponse) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *StartRolloutResponse) GetFlag() *Flag {
+	if x != nil {
+		return x.Flag
+	}
+	return nil
+}
+
+type AdvanceRolloutRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Flag          string                 `protobuf:"bytes,2,opt,name=flag,proto3" json:"flag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdvanceRolloutRequest) Reset() {
+	*x = AdvanceRolloutRequest{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdvanceRolloutRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdvanceRolloutRequest) ProtoMessage() {}
+
+func (x *AdvanceRolloutRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdvanceRolloutRequest.ProtoReflect.Descriptor instead.
+func (*AdvanceRolloutRequest) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *AdvanceRolloutRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *AdvanceRolloutRequest) GetFlag() string {
+	if x != nil {
+		return x.Flag
+	}
+	return ""
+}
+
+type AdvanceRolloutResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Flag          *Flag                  `protobuf:"bytes,1,opt,name=flag,proto3" json:"flag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdvanceRolloutResponse) Reset() {
+	*x = AdvanceRolloutResponse{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdvanceRolloutResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdvanceRolloutResponse) ProtoMessage() {}
+
+func (x *AdvanceRolloutResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdvanceRolloutResponse.ProtoReflect.Descriptor instead.
+func (*AdvanceRolloutResponse) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *AdvanceRolloutResponse) GetFlag() *Flag {
+	if x != nil {
+		return x.Flag
+	}
+	return nil
+}
+
+type PauseRolloutRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Flag          string                 `protobuf:"bytes,2,opt,name=flag,proto3" json:"flag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PauseRolloutRequest) Reset() {
+	*x = PauseRolloutRequest{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PauseRolloutRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PauseRolloutRequest) ProtoMessage() {}
+
+func (x *PauseRolloutRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PauseRolloutRequest.ProtoReflect.Descriptor instead.
+func (*PauseRolloutRequest) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *PauseRolloutRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *PauseRolloutRequest) GetFlag() string {
+	if x != nil {
+		return x.Flag
+	}
+	return ""
+}
+
+type PauseRolloutResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Flag          *Flag                  `protobuf:"bytes,1,opt,name=flag,proto3" json:"flag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PauseRolloutResponse) Reset() {
+	*x = PauseRolloutResponse{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PauseRolloutResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PauseRolloutResponse) ProtoMessage() {}
+
+func (x *PauseRolloutResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PauseRolloutResponse.ProtoReflect.Descriptor instead.
+func (*PauseRolloutResponse) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *PauseRolloutResponse) GetFlag() *Flag {
+	if x != nil {
+		return x.Flag
+	}
+	return nil
+}
+
+type ResumeRolloutRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Flag          string                 `protobuf:"bytes,2,opt,name=flag,proto3" json:"flag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResumeRolloutRequest) Reset() {
+	*x = ResumeRolloutRequest{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResumeRolloutRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResumeRolloutRequest) ProtoMessage() {}
+
+func (x *ResumeRolloutRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResumeRolloutRequest.ProtoReflect.Descriptor instead.
+func (*ResumeRolloutRequest) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *ResumeRolloutRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *ResumeRolloutRequest) GetFlag() string {
+	if x != nil {
+		return x.Flag
+	}
+	return ""
+}
+
+type ResumeRolloutResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Flag          *Flag                  `protobuf:"bytes,1,opt,name=flag,proto3" json:"flag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResumeRolloutResponse) Reset() {
+	*x = ResumeRolloutResponse{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResumeRolloutResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResumeRolloutResponse) ProtoMessage() {}
+
+func (x *ResumeRolloutResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResumeRolloutResponse.ProtoReflect.Descriptor instead.
+func (*ResumeRolloutResponse) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *ResumeRolloutResponse) GetFlag() *Flag {
+	if x != nil {
+		return x.Flag
+	}
+	return nil
+}
+
+type AbortRolloutRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Flag          string                 `protobuf:"bytes,2,opt,name=flag,proto3" json:"flag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AbortRolloutRequest) Reset() {
+	*x = AbortRolloutRequest{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AbortRolloutRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AbortRolloutRequest) ProtoMessage() {}
+
+func (x *AbortRolloutRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AbortRolloutRequest.ProtoReflect.Descriptor instead.
+func (*AbortRolloutRequest) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *AbortRolloutRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *AbortRolloutRequest) GetFlag() string {
+	if x != nil {
+		return x.Flag
+	}
+	return ""
+}
+
+type AbortRolloutResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Flag          *Flag                  `protobuf:"bytes,1,opt,name=flag,proto3" json:"flag,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AbortRolloutResponse) Reset() {
+	*x = AbortRolloutResponse{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AbortRolloutResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AbortRolloutResponse) ProtoMessage() {}
+
+func (x *AbortRolloutResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AbortRolloutResponse.ProtoReflect.Descriptor instead.
+func (*AbortRolloutResponse) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *AbortRolloutResponse) GetFlag() *Flag {
+	if x != nil {
+		return x.Flag
+	}
+	return nil
+}
+
+type ListRevisionsRequest struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Namespace string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	// 1 to 500; 0 means 50.
+	PageSize int32 `protobuf:"varint,2,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	// Only revisions older than this one; 0 starts from the latest.
+	BeforeRevision int64 `protobuf:"varint,3,opt,name=before_revision,json=beforeRevision,proto3" json:"before_revision,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ListRevisionsRequest) Reset() {
+	*x = ListRevisionsRequest{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRevisionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRevisionsRequest) ProtoMessage() {}
+
+func (x *ListRevisionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRevisionsRequest.ProtoReflect.Descriptor instead.
+func (*ListRevisionsRequest) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *ListRevisionsRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *ListRevisionsRequest) GetPageSize() int32 {
+	if x != nil {
+		return x.PageSize
+	}
+	return 0
+}
+
+func (x *ListRevisionsRequest) GetBeforeRevision() int64 {
+	if x != nil {
+		return x.BeforeRevision
+	}
+	return 0
+}
+
+type ListRevisionsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Newest first, without snapshots.
+	Revisions []*Revision `protobuf:"bytes,1,rep,name=revisions,proto3" json:"revisions,omitempty"`
+	// Pass as before_revision to get the next page; 0 when there are no more.
+	NextBeforeRevision int64 `protobuf:"varint,2,opt,name=next_before_revision,json=nextBeforeRevision,proto3" json:"next_before_revision,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *ListRevisionsResponse) Reset() {
+	*x = ListRevisionsResponse{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRevisionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRevisionsResponse) ProtoMessage() {}
+
+func (x *ListRevisionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRevisionsResponse.ProtoReflect.Descriptor instead.
+func (*ListRevisionsResponse) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *ListRevisionsResponse) GetRevisions() []*Revision {
+	if x != nil {
+		return x.Revisions
+	}
+	return nil
+}
+
+func (x *ListRevisionsResponse) GetNextBeforeRevision() int64 {
+	if x != nil {
+		return x.NextBeforeRevision
+	}
+	return 0
+}
+
+type GetRevisionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Revision      int64                  `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetRevisionRequest) Reset() {
+	*x = GetRevisionRequest{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetRevisionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetRevisionRequest) ProtoMessage() {}
+
+func (x *GetRevisionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetRevisionRequest.ProtoReflect.Descriptor instead.
+func (*GetRevisionRequest) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *GetRevisionRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *GetRevisionRequest) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+type GetRevisionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Revision      *Revision              `protobuf:"bytes,1,opt,name=revision,proto3" json:"revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetRevisionResponse) Reset() {
+	*x = GetRevisionResponse{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetRevisionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetRevisionResponse) ProtoMessage() {}
+
+func (x *GetRevisionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetRevisionResponse.ProtoReflect.Descriptor instead.
+func (*GetRevisionResponse) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *GetRevisionResponse) GetRevision() *Revision {
+	if x != nil {
+		return x.Revision
+	}
+	return nil
+}
+
+type DiffRevisionsRequest struct {
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Namespace    string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	FromRevision int64                  `protobuf:"varint,2,opt,name=from_revision,json=fromRevision,proto3" json:"from_revision,omitempty"`
+	// 0 means the current state.
+	ToRevision    int64 `protobuf:"varint,3,opt,name=to_revision,json=toRevision,proto3" json:"to_revision,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiffRevisionsRequest) Reset() {
+	*x = DiffRevisionsRequest{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiffRevisionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiffRevisionsRequest) ProtoMessage() {}
+
+func (x *DiffRevisionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiffRevisionsRequest.ProtoReflect.Descriptor instead.
+func (*DiffRevisionsRequest) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *DiffRevisionsRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *DiffRevisionsRequest) GetFromRevision() int64 {
+	if x != nil {
+		return x.FromRevision
+	}
+	return 0
+}
+
+func (x *DiffRevisionsRequest) GetToRevision() int64 {
+	if x != nil {
+		return x.ToRevision
+	}
+	return 0
+}
+
+type DiffRevisionsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// What changes going from from_revision to to_revision.
+	Changes       []*Change `protobuf:"bytes,1,rep,name=changes,proto3" json:"changes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiffRevisionsResponse) Reset() {
+	*x = DiffRevisionsResponse{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiffRevisionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiffRevisionsResponse) ProtoMessage() {}
+
+func (x *DiffRevisionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiffRevisionsResponse.ProtoReflect.Descriptor instead.
+func (*DiffRevisionsResponse) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *DiffRevisionsResponse) GetChanges() []*Change {
+	if x != nil {
+		return x.Changes
+	}
+	return nil
+}
+
+type RollbackRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Namespace  string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	ToRevision int64                  `protobuf:"varint,2,opt,name=to_revision,json=toRevision,proto3" json:"to_revision,omitempty"`
+	// When non-zero the rollback fails with ABORTED unless the namespace is
+	// still at this revision, so a rollback never silently discards a change
+	// the caller has not seen.
+	ExpectedRevision int64 `protobuf:"varint,3,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *RollbackRequest) Reset() {
+	*x = RollbackRequest{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RollbackRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RollbackRequest) ProtoMessage() {}
+
+func (x *RollbackRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RollbackRequest.ProtoReflect.Descriptor instead.
+func (*RollbackRequest) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{55}
+}
+
+func (x *RollbackRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *RollbackRequest) GetToRevision() int64 {
+	if x != nil {
+		return x.ToRevision
+	}
+	return 0
+}
+
+func (x *RollbackRequest) GetExpectedRevision() int64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
+type RollbackResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The new namespace revision, or the current one if nothing had to change.
+	Revision      int64     `protobuf:"varint,1,opt,name=revision,proto3" json:"revision,omitempty"`
+	Changes       []*Change `protobuf:"bytes,2,rep,name=changes,proto3" json:"changes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RollbackResponse) Reset() {
+	*x = RollbackResponse{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RollbackResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RollbackResponse) ProtoMessage() {}
+
+func (x *RollbackResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RollbackResponse.ProtoReflect.Descriptor instead.
+func (*RollbackResponse) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *RollbackResponse) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *RollbackResponse) GetChanges() []*Change {
+	if x != nil {
+		return x.Changes
+	}
+	return nil
+}
+
+type ListAuditEventsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// All filters are optional and combine with AND.
+	Namespace  string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	EntityType string                 `protobuf:"bytes,2,opt,name=entity_type,json=entityType,proto3" json:"entity_type,omitempty"`
+	EntityKey  string                 `protobuf:"bytes,3,opt,name=entity_key,json=entityKey,proto3" json:"entity_key,omitempty"`
+	Actor      string                 `protobuf:"bytes,4,opt,name=actor,proto3" json:"actor,omitempty"`
+	Since      *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=since,proto3" json:"since,omitempty"`
+	Until      *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=until,proto3" json:"until,omitempty"`
+	// 1 to 500; 0 means 50.
+	PageSize int32 `protobuf:"varint,7,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	// From a previous response's next_page_token.
+	PageToken     string `protobuf:"bytes,8,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAuditEventsRequest) Reset() {
+	*x = ListAuditEventsRequest{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAuditEventsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAuditEventsRequest) ProtoMessage() {}
+
+func (x *ListAuditEventsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAuditEventsRequest.ProtoReflect.Descriptor instead.
+func (*ListAuditEventsRequest) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *ListAuditEventsRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *ListAuditEventsRequest) GetEntityType() string {
+	if x != nil {
+		return x.EntityType
+	}
+	return ""
+}
+
+func (x *ListAuditEventsRequest) GetEntityKey() string {
+	if x != nil {
+		return x.EntityKey
+	}
+	return ""
+}
+
+func (x *ListAuditEventsRequest) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *ListAuditEventsRequest) GetSince() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Since
+	}
+	return nil
+}
+
+func (x *ListAuditEventsRequest) GetUntil() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Until
+	}
+	return nil
+}
+
+func (x *ListAuditEventsRequest) GetPageSize() int32 {
+	if x != nil {
+		return x.PageSize
+	}
+	return 0
+}
+
+func (x *ListAuditEventsRequest) GetPageToken() string {
+	if x != nil {
+		return x.PageToken
+	}
+	return ""
+}
+
+type ListAuditEventsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Newest first.
+	Events []*AuditEvent `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
+	// Empty when there are no more events.
+	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAuditEventsResponse) Reset() {
+	*x = ListAuditEventsResponse{}
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAuditEventsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAuditEventsResponse) ProtoMessage() {}
+
+func (x *ListAuditEventsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAuditEventsResponse.ProtoReflect.Descriptor instead.
+func (*ListAuditEventsResponse) Descriptor() ([]byte, []int) {
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *ListAuditEventsResponse) GetEvents() []*AuditEvent {
+	if x != nil {
+		return x.Events
+	}
+	return nil
+}
+
+func (x *ListAuditEventsResponse) GetNextPageToken() string {
+	if x != nil {
+		return x.NextPageToken
+	}
+	return ""
 }
 
 type GetSnapshotRequest struct {
@@ -1437,7 +3951,7 @@ type GetSnapshotRequest struct {
 
 func (x *GetSnapshotRequest) Reset() {
 	*x = GetSnapshotRequest{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[24]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1449,7 +3963,7 @@ func (x *GetSnapshotRequest) String() string {
 func (*GetSnapshotRequest) ProtoMessage() {}
 
 func (x *GetSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[24]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1462,7 +3976,7 @@ func (x *GetSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*GetSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{24}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *GetSnapshotRequest) GetNamespace() string {
@@ -1481,7 +3995,7 @@ type GetSnapshotResponse struct {
 
 func (x *GetSnapshotResponse) Reset() {
 	*x = GetSnapshotResponse{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[25]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1493,7 +4007,7 @@ func (x *GetSnapshotResponse) String() string {
 func (*GetSnapshotResponse) ProtoMessage() {}
 
 func (x *GetSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[25]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1506,7 +4020,7 @@ func (x *GetSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*GetSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{25}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *GetSnapshotResponse) GetSnapshot() *Snapshot {
@@ -1529,7 +4043,7 @@ type WatchRequest struct {
 
 func (x *WatchRequest) Reset() {
 	*x = WatchRequest{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[26]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1541,7 +4055,7 @@ func (x *WatchRequest) String() string {
 func (*WatchRequest) ProtoMessage() {}
 
 func (x *WatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[26]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1554,7 +4068,7 @@ func (x *WatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchRequest.ProtoReflect.Descriptor instead.
 func (*WatchRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{26}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *WatchRequest) GetNamespace() string {
@@ -1587,7 +4101,7 @@ type WatchResponse struct {
 
 func (x *WatchResponse) Reset() {
 	*x = WatchResponse{}
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[27]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1599,7 +4113,7 @@ func (x *WatchResponse) String() string {
 func (*WatchResponse) ProtoMessage() {}
 
 func (x *WatchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_v1_controlplane_proto_msgTypes[27]
+	mi := &file_controlplane_v1_controlplane_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1612,7 +4126,7 @@ func (x *WatchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchResponse.ProtoReflect.Descriptor instead.
 func (*WatchResponse) Descriptor() ([]byte, []int) {
-	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{27}
+	return file_controlplane_v1_controlplane_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *WatchResponse) GetSnapshot() *Snapshot {
@@ -1626,7 +4140,7 @@ var File_controlplane_v1_controlplane_proto protoreflect.FileDescriptor
 
 const file_controlplane_v1_controlplane_proto_rawDesc = "" +
 	"\n" +
-	"\"controlplane/v1/controlplane.proto\x12\x0fcontrolplane.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd3\x01\n" +
+	"\"controlplane/v1/controlplane.proto\x12\x0fcontrolplane.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf2\x01\n" +
 	"\tNamespace\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x1a\n" +
@@ -1634,7 +4148,9 @@ const file_controlplane_v1_controlplane_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xe0\x01\n" +
+	"updated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1d\n" +
+	"\n" +
+	"created_by\x18\x06 \x01(\tR\tcreatedBy\"\xe0\x01\n" +
 	"\x06Config\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
 	"\x05value\x18\x02 \x01(\v2\x16.google.protobuf.ValueR\x05value\x12 \n" +
@@ -1643,7 +4159,7 @@ const file_controlplane_v1_controlplane_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_by\x18\x06 \x01(\tR\tupdatedBy\"\xca\x01\n" +
+	"updated_by\x18\x06 \x01(\tR\tupdatedBy\"\xdd\x02\n" +
 	"\x04Flag\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x18\n" +
 	"\aenabled\x18\x02 \x01(\bR\aenabled\x12 \n" +
@@ -1652,7 +4168,24 @@ const file_controlplane_v1_controlplane_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_by\x18\x06 \x01(\tR\tupdatedBy\"g\n" +
+	"updated_by\x18\x06 \x01(\tR\tupdatedBy\x12'\n" +
+	"\x0frollout_percent\x18\a \x01(\x01R\x0erolloutPercent\x12\x12\n" +
+	"\x04salt\x18\b \x01(\tR\x04salt\x12\x1c\n" +
+	"\tallowlist\x18\t \x03(\tR\tallowlist\x126\n" +
+	"\arollout\x18\n" +
+	" \x01(\v2\x1c.controlplane.v1.RolloutPlanR\arollout\"_\n" +
+	"\fRolloutStage\x12\x18\n" +
+	"\apercent\x18\x01 \x01(\x01R\apercent\x125\n" +
+	"\bduration\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\bduration\"\xbe\x02\n" +
+	"\vRolloutPlan\x125\n" +
+	"\x06stages\x18\x01 \x03(\v2\x1d.controlplane.v1.RolloutStageR\x06stages\x12#\n" +
+	"\rcurrent_stage\x18\x02 \x01(\x05R\fcurrentStage\x123\n" +
+	"\x05state\x18\x03 \x01(\x0e2\x1d.controlplane.v1.RolloutStateR\x05state\x129\n" +
+	"\n" +
+	"started_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12D\n" +
+	"\x10stage_started_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x0estageStartedAt\x12\x1d\n" +
+	"\n" +
+	"started_by\x18\x06 \x01(\tR\tstartedBy\"g\n" +
 	"\aVariant\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06weight\x18\x02 \x01(\rR\x06weight\x120\n" +
@@ -1668,7 +4201,33 @@ const file_controlplane_v1_controlplane_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_by\x18\b \x01(\tR\tupdatedBy\"\x9e\x02\n" +
+	"updated_by\x18\b \x01(\tR\tupdatedBy\"\x95\x02\n" +
+	"\tRateLimit\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x18\n" +
+	"\aenabled\x18\x02 \x01(\bR\aenabled\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12.\n" +
+	"\x13requests_per_second\x18\x04 \x01(\x01R\x11requestsPerSecond\x12\x14\n" +
+	"\x05burst\x18\x05 \x01(\rR\x05burst\x12\x1a\n" +
+	"\brevision\x18\x06 \x01(\x03R\brevision\x129\n" +
+	"\n" +
+	"updated_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1d\n" +
+	"\n" +
+	"updated_by\x18\b \x01(\tR\tupdatedBy\"\xd5\x03\n" +
+	"\x0eCircuitBreaker\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x18\n" +
+	"\aenabled\x18\x02 \x01(\bR\aenabled\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x124\n" +
+	"\x16failure_rate_threshold\x18\x04 \x01(\x01R\x14failureRateThreshold\x12!\n" +
+	"\fmin_requests\x18\x05 \x01(\rR\vminRequests\x121\n" +
+	"\x06window\x18\x06 \x01(\v2\x19.google.protobuf.DurationR\x06window\x12>\n" +
+	"\ropen_duration\x18\a \x01(\v2\x19.google.protobuf.DurationR\fopenDuration\x123\n" +
+	"\x16half_open_max_requests\x18\b \x01(\rR\x13halfOpenMaxRequests\x12\x1a\n" +
+	"\brevision\x18\t \x01(\x03R\brevision\x129\n" +
+	"\n" +
+	"updated_at\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1d\n" +
+	"\n" +
+	"updated_by\x18\v \x01(\tR\tupdatedBy\"\xa7\x03\n" +
 	"\bSnapshot\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x1a\n" +
 	"\brevision\x18\x02 \x01(\x03R\brevision\x121\n" +
@@ -1676,7 +4235,41 @@ const file_controlplane_v1_controlplane_proto_rawDesc = "" +
 	"\x05flags\x18\x04 \x03(\v2\x15.controlplane.v1.FlagR\x05flags\x12=\n" +
 	"\vexperiments\x18\x05 \x03(\v2\x1b.controlplane.v1.ExperimentR\vexperiments\x129\n" +
 	"\n" +
-	"updated_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"N\n" +
+	"updated_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12;\n" +
+	"\vrate_limits\x18\a \x03(\v2\x1a.controlplane.v1.RateLimitR\n" +
+	"rateLimits\x12J\n" +
+	"\x10circuit_breakers\x18\b \x03(\v2\x1f.controlplane.v1.CircuitBreakerR\x0fcircuitBreakers\"\xca\x01\n" +
+	"\x06Change\x12\x1f\n" +
+	"\ventity_type\x18\x01 \x01(\tR\n" +
+	"entityType\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12/\n" +
+	"\x04type\x18\x03 \x01(\x0e2\x1b.controlplane.v1.ChangeTypeR\x04type\x12.\n" +
+	"\x06before\x18\x04 \x01(\v2\x16.google.protobuf.ValueR\x06before\x12,\n" +
+	"\x05after\x18\x05 \x01(\v2\x16.google.protobuf.ValueR\x05after\"\xe6\x01\n" +
+	"\bRevision\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x1a\n" +
+	"\brevision\x18\x02 \x01(\x03R\brevision\x12\x14\n" +
+	"\x05actor\x18\x03 \x01(\tR\x05actor\x129\n" +
+	"\n" +
+	"created_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x18\n" +
+	"\asummary\x18\x05 \x01(\tR\asummary\x125\n" +
+	"\bsnapshot\x18\x06 \x01(\v2\x19.controlplane.v1.SnapshotR\bsnapshot\"\xec\x02\n" +
+	"\n" +
+	"AuditEvent\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x1c\n" +
+	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x1a\n" +
+	"\brevision\x18\x03 \x01(\x03R\brevision\x12\x14\n" +
+	"\x05actor\x18\x04 \x01(\tR\x05actor\x12.\n" +
+	"\x04time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x04time\x12\x16\n" +
+	"\x06action\x18\x06 \x01(\tR\x06action\x12\x1f\n" +
+	"\ventity_type\x18\a \x01(\tR\n" +
+	"entityType\x12\x1d\n" +
+	"\n" +
+	"entity_key\x18\b \x01(\tR\tentityKey\x12.\n" +
+	"\x06before\x18\t \x01(\v2\x16.google.protobuf.ValueR\x06before\x12,\n" +
+	"\x05after\x18\n" +
+	" \x01(\v2\x16.google.protobuf.ValueR\x05after\x12\x18\n" +
+	"\amessage\x18\v \x01(\tR\amessage\"N\n" +
 	"\x16CreateNamespaceRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\"S\n" +
@@ -1690,47 +4283,162 @@ const file_controlplane_v1_controlplane_proto_rawDesc = "" +
 	"\x16ListNamespacesResponse\x12:\n" +
 	"\n" +
 	"namespaces\x18\x01 \x03(\v2\x1a.controlplane.v1.NamespaceR\n" +
-	"namespaces\"\x92\x01\n" +
+	"namespaces\"\xbf\x01\n" +
 	"\x10PutConfigRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12,\n" +
 	"\x05value\x18\x03 \x01(\v2\x16.google.protobuf.ValueR\x05value\x12 \n" +
-	"\vdescription\x18\x04 \x01(\tR\vdescription\"D\n" +
+	"\vdescription\x18\x04 \x01(\tR\vdescription\x12+\n" +
+	"\x11expected_revision\x18\x05 \x01(\x03R\x10expectedRevision\"D\n" +
 	"\x11PutConfigResponse\x12/\n" +
-	"\x06config\x18\x01 \x01(\v2\x17.controlplane.v1.ConfigR\x06config\"E\n" +
+	"\x06config\x18\x01 \x01(\v2\x17.controlplane.v1.ConfigR\x06config\"r\n" +
 	"\x13DeleteConfigRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
-	"\x03key\x18\x02 \x01(\tR\x03key\"2\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12+\n" +
+	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\"2\n" +
 	"\x14DeleteConfigResponse\x12\x1a\n" +
-	"\brevision\x18\x01 \x01(\x03R\brevision\"|\n" +
+	"\brevision\x18\x01 \x01(\x03R\brevision\"\x9d\x02\n" +
 	"\x0ePutFlagRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x18\n" +
 	"\aenabled\x18\x03 \x01(\bR\aenabled\x12 \n" +
-	"\vdescription\x18\x04 \x01(\tR\vdescription\"<\n" +
+	"\vdescription\x18\x04 \x01(\tR\vdescription\x12+\n" +
+	"\x11expected_revision\x18\x05 \x01(\x03R\x10expectedRevision\x12,\n" +
+	"\x0frollout_percent\x18\x06 \x01(\x01H\x00R\x0erolloutPercent\x88\x01\x01\x12\x12\n" +
+	"\x04salt\x18\a \x01(\tR\x04salt\x12\x1c\n" +
+	"\tallowlist\x18\b \x03(\tR\tallowlistB\x12\n" +
+	"\x10_rollout_percent\"<\n" +
 	"\x0fPutFlagResponse\x12)\n" +
-	"\x04flag\x18\x01 \x01(\v2\x15.controlplane.v1.FlagR\x04flag\"C\n" +
+	"\x04flag\x18\x01 \x01(\v2\x15.controlplane.v1.FlagR\x04flag\"p\n" +
 	"\x11DeleteFlagRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
-	"\x03key\x18\x02 \x01(\tR\x03key\"0\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12+\n" +
+	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\"0\n" +
 	"\x12DeleteFlagResponse\x12\x1a\n" +
-	"\brevision\x18\x01 \x01(\x03R\brevision\"\xcc\x01\n" +
+	"\brevision\x18\x01 \x01(\x03R\brevision\"\xf9\x01\n" +
 	"\x14PutExperimentRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x18\n" +
 	"\aenabled\x18\x03 \x01(\bR\aenabled\x12 \n" +
 	"\vdescription\x18\x04 \x01(\tR\vdescription\x12\x12\n" +
 	"\x04salt\x18\x05 \x01(\tR\x04salt\x124\n" +
-	"\bvariants\x18\x06 \x03(\v2\x18.controlplane.v1.VariantR\bvariants\"T\n" +
+	"\bvariants\x18\x06 \x03(\v2\x18.controlplane.v1.VariantR\bvariants\x12+\n" +
+	"\x11expected_revision\x18\a \x01(\x03R\x10expectedRevision\"T\n" +
 	"\x15PutExperimentResponse\x12;\n" +
 	"\n" +
 	"experiment\x18\x01 \x01(\v2\x1b.controlplane.v1.ExperimentR\n" +
-	"experiment\"I\n" +
+	"experiment\"v\n" +
 	"\x17DeleteExperimentRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
-	"\x03key\x18\x02 \x01(\tR\x03key\"6\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12+\n" +
+	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\"6\n" +
 	"\x18DeleteExperimentResponse\x12\x1a\n" +
-	"\brevision\x18\x01 \x01(\x03R\brevision\"2\n" +
+	"\brevision\x18\x01 \x01(\x03R\brevision\"\xf4\x01\n" +
+	"\x13PutRateLimitRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12\x18\n" +
+	"\aenabled\x18\x03 \x01(\bR\aenabled\x12 \n" +
+	"\vdescription\x18\x04 \x01(\tR\vdescription\x12.\n" +
+	"\x13requests_per_second\x18\x05 \x01(\x01R\x11requestsPerSecond\x12\x14\n" +
+	"\x05burst\x18\x06 \x01(\rR\x05burst\x12+\n" +
+	"\x11expected_revision\x18\a \x01(\x03R\x10expectedRevision\"Q\n" +
+	"\x14PutRateLimitResponse\x129\n" +
+	"\n" +
+	"rate_limit\x18\x01 \x01(\v2\x1a.controlplane.v1.RateLimitR\trateLimit\"u\n" +
+	"\x16DeleteRateLimitRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12+\n" +
+	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\"5\n" +
+	"\x17DeleteRateLimitResponse\x12\x1a\n" +
+	"\brevision\x18\x01 \x01(\x03R\brevision\"\xb4\x03\n" +
+	"\x18PutCircuitBreakerRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12\x18\n" +
+	"\aenabled\x18\x03 \x01(\bR\aenabled\x12 \n" +
+	"\vdescription\x18\x04 \x01(\tR\vdescription\x124\n" +
+	"\x16failure_rate_threshold\x18\x05 \x01(\x01R\x14failureRateThreshold\x12!\n" +
+	"\fmin_requests\x18\x06 \x01(\rR\vminRequests\x121\n" +
+	"\x06window\x18\a \x01(\v2\x19.google.protobuf.DurationR\x06window\x12>\n" +
+	"\ropen_duration\x18\b \x01(\v2\x19.google.protobuf.DurationR\fopenDuration\x123\n" +
+	"\x16half_open_max_requests\x18\t \x01(\rR\x13halfOpenMaxRequests\x12+\n" +
+	"\x11expected_revision\x18\n" +
+	" \x01(\x03R\x10expectedRevision\"e\n" +
+	"\x19PutCircuitBreakerResponse\x12H\n" +
+	"\x0fcircuit_breaker\x18\x01 \x01(\v2\x1f.controlplane.v1.CircuitBreakerR\x0ecircuitBreaker\"z\n" +
+	"\x1bDeleteCircuitBreakerRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12+\n" +
+	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\":\n" +
+	"\x1cDeleteCircuitBreakerResponse\x12\x1a\n" +
+	"\brevision\x18\x01 \x01(\x03R\brevision\"~\n" +
+	"\x13StartRolloutRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x12\n" +
+	"\x04flag\x18\x02 \x01(\tR\x04flag\x125\n" +
+	"\x06stages\x18\x03 \x03(\v2\x1d.controlplane.v1.RolloutStageR\x06stages\"A\n" +
+	"\x14StartRolloutResponse\x12)\n" +
+	"\x04flag\x18\x01 \x01(\v2\x15.controlplane.v1.FlagR\x04flag\"I\n" +
+	"\x15AdvanceRolloutRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x12\n" +
+	"\x04flag\x18\x02 \x01(\tR\x04flag\"C\n" +
+	"\x16AdvanceRolloutResponse\x12)\n" +
+	"\x04flag\x18\x01 \x01(\v2\x15.controlplane.v1.FlagR\x04flag\"G\n" +
+	"\x13PauseRolloutRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x12\n" +
+	"\x04flag\x18\x02 \x01(\tR\x04flag\"A\n" +
+	"\x14PauseRolloutResponse\x12)\n" +
+	"\x04flag\x18\x01 \x01(\v2\x15.controlplane.v1.FlagR\x04flag\"H\n" +
+	"\x14ResumeRolloutRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x12\n" +
+	"\x04flag\x18\x02 \x01(\tR\x04flag\"B\n" +
+	"\x15ResumeRolloutResponse\x12)\n" +
+	"\x04flag\x18\x01 \x01(\v2\x15.controlplane.v1.FlagR\x04flag\"G\n" +
+	"\x13AbortRolloutRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x12\n" +
+	"\x04flag\x18\x02 \x01(\tR\x04flag\"A\n" +
+	"\x14AbortRolloutResponse\x12)\n" +
+	"\x04flag\x18\x01 \x01(\v2\x15.controlplane.v1.FlagR\x04flag\"z\n" +
+	"\x14ListRevisionsRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x1b\n" +
+	"\tpage_size\x18\x02 \x01(\x05R\bpageSize\x12'\n" +
+	"\x0fbefore_revision\x18\x03 \x01(\x03R\x0ebeforeRevision\"\x82\x01\n" +
+	"\x15ListRevisionsResponse\x127\n" +
+	"\trevisions\x18\x01 \x03(\v2\x19.controlplane.v1.RevisionR\trevisions\x120\n" +
+	"\x14next_before_revision\x18\x02 \x01(\x03R\x12nextBeforeRevision\"N\n" +
+	"\x12GetRevisionRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x1a\n" +
+	"\brevision\x18\x02 \x01(\x03R\brevision\"L\n" +
+	"\x13GetRevisionResponse\x125\n" +
+	"\brevision\x18\x01 \x01(\v2\x19.controlplane.v1.RevisionR\brevision\"z\n" +
+	"\x14DiffRevisionsRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12#\n" +
+	"\rfrom_revision\x18\x02 \x01(\x03R\ffromRevision\x12\x1f\n" +
+	"\vto_revision\x18\x03 \x01(\x03R\n" +
+	"toRevision\"J\n" +
+	"\x15DiffRevisionsResponse\x121\n" +
+	"\achanges\x18\x01 \x03(\v2\x17.controlplane.v1.ChangeR\achanges\"}\n" +
+	"\x0fRollbackRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x1f\n" +
+	"\vto_revision\x18\x02 \x01(\x03R\n" +
+	"toRevision\x12+\n" +
+	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\"a\n" +
+	"\x10RollbackResponse\x12\x1a\n" +
+	"\brevision\x18\x01 \x01(\x03R\brevision\x121\n" +
+	"\achanges\x18\x02 \x03(\v2\x17.controlplane.v1.ChangeR\achanges\"\xac\x02\n" +
+	"\x16ListAuditEventsRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x1f\n" +
+	"\ventity_type\x18\x02 \x01(\tR\n" +
+	"entityType\x12\x1d\n" +
+	"\n" +
+	"entity_key\x18\x03 \x01(\tR\tentityKey\x12\x14\n" +
+	"\x05actor\x18\x04 \x01(\tR\x05actor\x120\n" +
+	"\x05since\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\x120\n" +
+	"\x05until\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x05until\x12\x1b\n" +
+	"\tpage_size\x18\a \x01(\x05R\bpageSize\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\b \x01(\tR\tpageToken\"v\n" +
+	"\x17ListAuditEventsResponse\x123\n" +
+	"\x06events\x18\x01 \x03(\v2\x1b.controlplane.v1.AuditEventR\x06events\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"2\n" +
 	"\x12GetSnapshotRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\"L\n" +
 	"\x13GetSnapshotResponse\x125\n" +
@@ -1740,7 +4448,19 @@ const file_controlplane_v1_controlplane_proto_rawDesc = "" +
 	"\x0eknown_revision\x18\x02 \x01(\x03R\rknownRevision\x12\x1b\n" +
 	"\tclient_id\x18\x03 \x01(\tR\bclientId\"F\n" +
 	"\rWatchResponse\x125\n" +
-	"\bsnapshot\x18\x01 \x01(\v2\x19.controlplane.v1.SnapshotR\bsnapshot2\xd3\x06\n" +
+	"\bsnapshot\x18\x01 \x01(\v2\x19.controlplane.v1.SnapshotR\bsnapshot*\x99\x01\n" +
+	"\fRolloutState\x12\x1d\n" +
+	"\x19ROLLOUT_STATE_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14ROLLOUT_STATE_ACTIVE\x10\x01\x12\x18\n" +
+	"\x14ROLLOUT_STATE_PAUSED\x10\x02\x12\x1b\n" +
+	"\x17ROLLOUT_STATE_COMPLETED\x10\x03\x12\x19\n" +
+	"\x15ROLLOUT_STATE_ABORTED\x10\x04*s\n" +
+	"\n" +
+	"ChangeType\x12\x1b\n" +
+	"\x17CHANGE_TYPE_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11CHANGE_TYPE_ADDED\x10\x01\x12\x18\n" +
+	"\x14CHANGE_TYPE_MODIFIED\x10\x02\x12\x17\n" +
+	"\x13CHANGE_TYPE_REMOVED\x10\x032\xa2\x11\n" +
 	"\fAdminService\x12d\n" +
 	"\x0fCreateNamespace\x12'.controlplane.v1.CreateNamespaceRequest\x1a(.controlplane.v1.CreateNamespaceResponse\x12[\n" +
 	"\fGetNamespace\x12$.controlplane.v1.GetNamespaceRequest\x1a%.controlplane.v1.GetNamespaceResponse\x12a\n" +
@@ -1751,7 +4471,21 @@ const file_controlplane_v1_controlplane_proto_rawDesc = "" +
 	"\n" +
 	"DeleteFlag\x12\".controlplane.v1.DeleteFlagRequest\x1a#.controlplane.v1.DeleteFlagResponse\x12^\n" +
 	"\rPutExperiment\x12%.controlplane.v1.PutExperimentRequest\x1a&.controlplane.v1.PutExperimentResponse\x12g\n" +
-	"\x10DeleteExperiment\x12(.controlplane.v1.DeleteExperimentRequest\x1a).controlplane.v1.DeleteExperimentResponse2\xb9\x01\n" +
+	"\x10DeleteExperiment\x12(.controlplane.v1.DeleteExperimentRequest\x1a).controlplane.v1.DeleteExperimentResponse\x12[\n" +
+	"\fPutRateLimit\x12$.controlplane.v1.PutRateLimitRequest\x1a%.controlplane.v1.PutRateLimitResponse\x12d\n" +
+	"\x0fDeleteRateLimit\x12'.controlplane.v1.DeleteRateLimitRequest\x1a(.controlplane.v1.DeleteRateLimitResponse\x12j\n" +
+	"\x11PutCircuitBreaker\x12).controlplane.v1.PutCircuitBreakerRequest\x1a*.controlplane.v1.PutCircuitBreakerResponse\x12s\n" +
+	"\x14DeleteCircuitBreaker\x12,.controlplane.v1.DeleteCircuitBreakerRequest\x1a-.controlplane.v1.DeleteCircuitBreakerResponse\x12[\n" +
+	"\fStartRollout\x12$.controlplane.v1.StartRolloutRequest\x1a%.controlplane.v1.StartRolloutResponse\x12a\n" +
+	"\x0eAdvanceRollout\x12&.controlplane.v1.AdvanceRolloutRequest\x1a'.controlplane.v1.AdvanceRolloutResponse\x12[\n" +
+	"\fPauseRollout\x12$.controlplane.v1.PauseRolloutRequest\x1a%.controlplane.v1.PauseRolloutResponse\x12^\n" +
+	"\rResumeRollout\x12%.controlplane.v1.ResumeRolloutRequest\x1a&.controlplane.v1.ResumeRolloutResponse\x12[\n" +
+	"\fAbortRollout\x12$.controlplane.v1.AbortRolloutRequest\x1a%.controlplane.v1.AbortRolloutResponse\x12^\n" +
+	"\rListRevisions\x12%.controlplane.v1.ListRevisionsRequest\x1a&.controlplane.v1.ListRevisionsResponse\x12X\n" +
+	"\vGetRevision\x12#.controlplane.v1.GetRevisionRequest\x1a$.controlplane.v1.GetRevisionResponse\x12^\n" +
+	"\rDiffRevisions\x12%.controlplane.v1.DiffRevisionsRequest\x1a&.controlplane.v1.DiffRevisionsResponse\x12O\n" +
+	"\bRollback\x12 .controlplane.v1.RollbackRequest\x1a!.controlplane.v1.RollbackResponse\x12d\n" +
+	"\x0fListAuditEvents\x12'.controlplane.v1.ListAuditEventsRequest\x1a(.controlplane.v1.ListAuditEventsResponse2\xb9\x01\n" +
 	"\x13DistributionService\x12X\n" +
 	"\vGetSnapshot\x12#.controlplane.v1.GetSnapshotRequest\x1a$.controlplane.v1.GetSnapshotResponse\x12H\n" +
 	"\x05Watch\x12\x1d.controlplane.v1.WatchRequest\x1a\x1e.controlplane.v1.WatchResponse0\x01BEZCgithub.com/Jenil133/Controlplane/gen/controlplane/v1;controlplanev1b\x06proto3"
@@ -1768,89 +4502,193 @@ func file_controlplane_v1_controlplane_proto_rawDescGZIP() []byte {
 	return file_controlplane_v1_controlplane_proto_rawDescData
 }
 
-var file_controlplane_v1_controlplane_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_controlplane_v1_controlplane_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_controlplane_v1_controlplane_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
 var file_controlplane_v1_controlplane_proto_goTypes = []any{
-	(*Namespace)(nil),                // 0: controlplane.v1.Namespace
-	(*Config)(nil),                   // 1: controlplane.v1.Config
-	(*Flag)(nil),                     // 2: controlplane.v1.Flag
-	(*Variant)(nil),                  // 3: controlplane.v1.Variant
-	(*Experiment)(nil),               // 4: controlplane.v1.Experiment
-	(*Snapshot)(nil),                 // 5: controlplane.v1.Snapshot
-	(*CreateNamespaceRequest)(nil),   // 6: controlplane.v1.CreateNamespaceRequest
-	(*CreateNamespaceResponse)(nil),  // 7: controlplane.v1.CreateNamespaceResponse
-	(*GetNamespaceRequest)(nil),      // 8: controlplane.v1.GetNamespaceRequest
-	(*GetNamespaceResponse)(nil),     // 9: controlplane.v1.GetNamespaceResponse
-	(*ListNamespacesRequest)(nil),    // 10: controlplane.v1.ListNamespacesRequest
-	(*ListNamespacesResponse)(nil),   // 11: controlplane.v1.ListNamespacesResponse
-	(*PutConfigRequest)(nil),         // 12: controlplane.v1.PutConfigRequest
-	(*PutConfigResponse)(nil),        // 13: controlplane.v1.PutConfigResponse
-	(*DeleteConfigRequest)(nil),      // 14: controlplane.v1.DeleteConfigRequest
-	(*DeleteConfigResponse)(nil),     // 15: controlplane.v1.DeleteConfigResponse
-	(*PutFlagRequest)(nil),           // 16: controlplane.v1.PutFlagRequest
-	(*PutFlagResponse)(nil),          // 17: controlplane.v1.PutFlagResponse
-	(*DeleteFlagRequest)(nil),        // 18: controlplane.v1.DeleteFlagRequest
-	(*DeleteFlagResponse)(nil),       // 19: controlplane.v1.DeleteFlagResponse
-	(*PutExperimentRequest)(nil),     // 20: controlplane.v1.PutExperimentRequest
-	(*PutExperimentResponse)(nil),    // 21: controlplane.v1.PutExperimentResponse
-	(*DeleteExperimentRequest)(nil),  // 22: controlplane.v1.DeleteExperimentRequest
-	(*DeleteExperimentResponse)(nil), // 23: controlplane.v1.DeleteExperimentResponse
-	(*GetSnapshotRequest)(nil),       // 24: controlplane.v1.GetSnapshotRequest
-	(*GetSnapshotResponse)(nil),      // 25: controlplane.v1.GetSnapshotResponse
-	(*WatchRequest)(nil),             // 26: controlplane.v1.WatchRequest
-	(*WatchResponse)(nil),            // 27: controlplane.v1.WatchResponse
-	(*timestamppb.Timestamp)(nil),    // 28: google.protobuf.Timestamp
-	(*structpb.Value)(nil),           // 29: google.protobuf.Value
+	(RolloutState)(0),                    // 0: controlplane.v1.RolloutState
+	(ChangeType)(0),                      // 1: controlplane.v1.ChangeType
+	(*Namespace)(nil),                    // 2: controlplane.v1.Namespace
+	(*Config)(nil),                       // 3: controlplane.v1.Config
+	(*Flag)(nil),                         // 4: controlplane.v1.Flag
+	(*RolloutStage)(nil),                 // 5: controlplane.v1.RolloutStage
+	(*RolloutPlan)(nil),                  // 6: controlplane.v1.RolloutPlan
+	(*Variant)(nil),                      // 7: controlplane.v1.Variant
+	(*Experiment)(nil),                   // 8: controlplane.v1.Experiment
+	(*RateLimit)(nil),                    // 9: controlplane.v1.RateLimit
+	(*CircuitBreaker)(nil),               // 10: controlplane.v1.CircuitBreaker
+	(*Snapshot)(nil),                     // 11: controlplane.v1.Snapshot
+	(*Change)(nil),                       // 12: controlplane.v1.Change
+	(*Revision)(nil),                     // 13: controlplane.v1.Revision
+	(*AuditEvent)(nil),                   // 14: controlplane.v1.AuditEvent
+	(*CreateNamespaceRequest)(nil),       // 15: controlplane.v1.CreateNamespaceRequest
+	(*CreateNamespaceResponse)(nil),      // 16: controlplane.v1.CreateNamespaceResponse
+	(*GetNamespaceRequest)(nil),          // 17: controlplane.v1.GetNamespaceRequest
+	(*GetNamespaceResponse)(nil),         // 18: controlplane.v1.GetNamespaceResponse
+	(*ListNamespacesRequest)(nil),        // 19: controlplane.v1.ListNamespacesRequest
+	(*ListNamespacesResponse)(nil),       // 20: controlplane.v1.ListNamespacesResponse
+	(*PutConfigRequest)(nil),             // 21: controlplane.v1.PutConfigRequest
+	(*PutConfigResponse)(nil),            // 22: controlplane.v1.PutConfigResponse
+	(*DeleteConfigRequest)(nil),          // 23: controlplane.v1.DeleteConfigRequest
+	(*DeleteConfigResponse)(nil),         // 24: controlplane.v1.DeleteConfigResponse
+	(*PutFlagRequest)(nil),               // 25: controlplane.v1.PutFlagRequest
+	(*PutFlagResponse)(nil),              // 26: controlplane.v1.PutFlagResponse
+	(*DeleteFlagRequest)(nil),            // 27: controlplane.v1.DeleteFlagRequest
+	(*DeleteFlagResponse)(nil),           // 28: controlplane.v1.DeleteFlagResponse
+	(*PutExperimentRequest)(nil),         // 29: controlplane.v1.PutExperimentRequest
+	(*PutExperimentResponse)(nil),        // 30: controlplane.v1.PutExperimentResponse
+	(*DeleteExperimentRequest)(nil),      // 31: controlplane.v1.DeleteExperimentRequest
+	(*DeleteExperimentResponse)(nil),     // 32: controlplane.v1.DeleteExperimentResponse
+	(*PutRateLimitRequest)(nil),          // 33: controlplane.v1.PutRateLimitRequest
+	(*PutRateLimitResponse)(nil),         // 34: controlplane.v1.PutRateLimitResponse
+	(*DeleteRateLimitRequest)(nil),       // 35: controlplane.v1.DeleteRateLimitRequest
+	(*DeleteRateLimitResponse)(nil),      // 36: controlplane.v1.DeleteRateLimitResponse
+	(*PutCircuitBreakerRequest)(nil),     // 37: controlplane.v1.PutCircuitBreakerRequest
+	(*PutCircuitBreakerResponse)(nil),    // 38: controlplane.v1.PutCircuitBreakerResponse
+	(*DeleteCircuitBreakerRequest)(nil),  // 39: controlplane.v1.DeleteCircuitBreakerRequest
+	(*DeleteCircuitBreakerResponse)(nil), // 40: controlplane.v1.DeleteCircuitBreakerResponse
+	(*StartRolloutRequest)(nil),          // 41: controlplane.v1.StartRolloutRequest
+	(*StartRolloutResponse)(nil),         // 42: controlplane.v1.StartRolloutResponse
+	(*AdvanceRolloutRequest)(nil),        // 43: controlplane.v1.AdvanceRolloutRequest
+	(*AdvanceRolloutResponse)(nil),       // 44: controlplane.v1.AdvanceRolloutResponse
+	(*PauseRolloutRequest)(nil),          // 45: controlplane.v1.PauseRolloutRequest
+	(*PauseRolloutResponse)(nil),         // 46: controlplane.v1.PauseRolloutResponse
+	(*ResumeRolloutRequest)(nil),         // 47: controlplane.v1.ResumeRolloutRequest
+	(*ResumeRolloutResponse)(nil),        // 48: controlplane.v1.ResumeRolloutResponse
+	(*AbortRolloutRequest)(nil),          // 49: controlplane.v1.AbortRolloutRequest
+	(*AbortRolloutResponse)(nil),         // 50: controlplane.v1.AbortRolloutResponse
+	(*ListRevisionsRequest)(nil),         // 51: controlplane.v1.ListRevisionsRequest
+	(*ListRevisionsResponse)(nil),        // 52: controlplane.v1.ListRevisionsResponse
+	(*GetRevisionRequest)(nil),           // 53: controlplane.v1.GetRevisionRequest
+	(*GetRevisionResponse)(nil),          // 54: controlplane.v1.GetRevisionResponse
+	(*DiffRevisionsRequest)(nil),         // 55: controlplane.v1.DiffRevisionsRequest
+	(*DiffRevisionsResponse)(nil),        // 56: controlplane.v1.DiffRevisionsResponse
+	(*RollbackRequest)(nil),              // 57: controlplane.v1.RollbackRequest
+	(*RollbackResponse)(nil),             // 58: controlplane.v1.RollbackResponse
+	(*ListAuditEventsRequest)(nil),       // 59: controlplane.v1.ListAuditEventsRequest
+	(*ListAuditEventsResponse)(nil),      // 60: controlplane.v1.ListAuditEventsResponse
+	(*GetSnapshotRequest)(nil),           // 61: controlplane.v1.GetSnapshotRequest
+	(*GetSnapshotResponse)(nil),          // 62: controlplane.v1.GetSnapshotResponse
+	(*WatchRequest)(nil),                 // 63: controlplane.v1.WatchRequest
+	(*WatchResponse)(nil),                // 64: controlplane.v1.WatchResponse
+	(*timestamppb.Timestamp)(nil),        // 65: google.protobuf.Timestamp
+	(*structpb.Value)(nil),               // 66: google.protobuf.Value
+	(*durationpb.Duration)(nil),          // 67: google.protobuf.Duration
 }
 var file_controlplane_v1_controlplane_proto_depIdxs = []int32{
-	28, // 0: controlplane.v1.Namespace.created_at:type_name -> google.protobuf.Timestamp
-	28, // 1: controlplane.v1.Namespace.updated_at:type_name -> google.protobuf.Timestamp
-	29, // 2: controlplane.v1.Config.value:type_name -> google.protobuf.Value
-	28, // 3: controlplane.v1.Config.updated_at:type_name -> google.protobuf.Timestamp
-	28, // 4: controlplane.v1.Flag.updated_at:type_name -> google.protobuf.Timestamp
-	29, // 5: controlplane.v1.Variant.payload:type_name -> google.protobuf.Value
-	3,  // 6: controlplane.v1.Experiment.variants:type_name -> controlplane.v1.Variant
-	28, // 7: controlplane.v1.Experiment.updated_at:type_name -> google.protobuf.Timestamp
-	1,  // 8: controlplane.v1.Snapshot.configs:type_name -> controlplane.v1.Config
-	2,  // 9: controlplane.v1.Snapshot.flags:type_name -> controlplane.v1.Flag
-	4,  // 10: controlplane.v1.Snapshot.experiments:type_name -> controlplane.v1.Experiment
-	28, // 11: controlplane.v1.Snapshot.updated_at:type_name -> google.protobuf.Timestamp
-	0,  // 12: controlplane.v1.CreateNamespaceResponse.namespace:type_name -> controlplane.v1.Namespace
-	0,  // 13: controlplane.v1.GetNamespaceResponse.namespace:type_name -> controlplane.v1.Namespace
-	0,  // 14: controlplane.v1.ListNamespacesResponse.namespaces:type_name -> controlplane.v1.Namespace
-	29, // 15: controlplane.v1.PutConfigRequest.value:type_name -> google.protobuf.Value
-	1,  // 16: controlplane.v1.PutConfigResponse.config:type_name -> controlplane.v1.Config
-	2,  // 17: controlplane.v1.PutFlagResponse.flag:type_name -> controlplane.v1.Flag
-	3,  // 18: controlplane.v1.PutExperimentRequest.variants:type_name -> controlplane.v1.Variant
-	4,  // 19: controlplane.v1.PutExperimentResponse.experiment:type_name -> controlplane.v1.Experiment
-	5,  // 20: controlplane.v1.GetSnapshotResponse.snapshot:type_name -> controlplane.v1.Snapshot
-	5,  // 21: controlplane.v1.WatchResponse.snapshot:type_name -> controlplane.v1.Snapshot
-	6,  // 22: controlplane.v1.AdminService.CreateNamespace:input_type -> controlplane.v1.CreateNamespaceRequest
-	8,  // 23: controlplane.v1.AdminService.GetNamespace:input_type -> controlplane.v1.GetNamespaceRequest
-	10, // 24: controlplane.v1.AdminService.ListNamespaces:input_type -> controlplane.v1.ListNamespacesRequest
-	12, // 25: controlplane.v1.AdminService.PutConfig:input_type -> controlplane.v1.PutConfigRequest
-	14, // 26: controlplane.v1.AdminService.DeleteConfig:input_type -> controlplane.v1.DeleteConfigRequest
-	16, // 27: controlplane.v1.AdminService.PutFlag:input_type -> controlplane.v1.PutFlagRequest
-	18, // 28: controlplane.v1.AdminService.DeleteFlag:input_type -> controlplane.v1.DeleteFlagRequest
-	20, // 29: controlplane.v1.AdminService.PutExperiment:input_type -> controlplane.v1.PutExperimentRequest
-	22, // 30: controlplane.v1.AdminService.DeleteExperiment:input_type -> controlplane.v1.DeleteExperimentRequest
-	24, // 31: controlplane.v1.DistributionService.GetSnapshot:input_type -> controlplane.v1.GetSnapshotRequest
-	26, // 32: controlplane.v1.DistributionService.Watch:input_type -> controlplane.v1.WatchRequest
-	7,  // 33: controlplane.v1.AdminService.CreateNamespace:output_type -> controlplane.v1.CreateNamespaceResponse
-	9,  // 34: controlplane.v1.AdminService.GetNamespace:output_type -> controlplane.v1.GetNamespaceResponse
-	11, // 35: controlplane.v1.AdminService.ListNamespaces:output_type -> controlplane.v1.ListNamespacesResponse
-	13, // 36: controlplane.v1.AdminService.PutConfig:output_type -> controlplane.v1.PutConfigResponse
-	15, // 37: controlplane.v1.AdminService.DeleteConfig:output_type -> controlplane.v1.DeleteConfigResponse
-	17, // 38: controlplane.v1.AdminService.PutFlag:output_type -> controlplane.v1.PutFlagResponse
-	19, // 39: controlplane.v1.AdminService.DeleteFlag:output_type -> controlplane.v1.DeleteFlagResponse
-	21, // 40: controlplane.v1.AdminService.PutExperiment:output_type -> controlplane.v1.PutExperimentResponse
-	23, // 41: controlplane.v1.AdminService.DeleteExperiment:output_type -> controlplane.v1.DeleteExperimentResponse
-	25, // 42: controlplane.v1.DistributionService.GetSnapshot:output_type -> controlplane.v1.GetSnapshotResponse
-	27, // 43: controlplane.v1.DistributionService.Watch:output_type -> controlplane.v1.WatchResponse
-	33, // [33:44] is the sub-list for method output_type
-	22, // [22:33] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	65, // 0: controlplane.v1.Namespace.created_at:type_name -> google.protobuf.Timestamp
+	65, // 1: controlplane.v1.Namespace.updated_at:type_name -> google.protobuf.Timestamp
+	66, // 2: controlplane.v1.Config.value:type_name -> google.protobuf.Value
+	65, // 3: controlplane.v1.Config.updated_at:type_name -> google.protobuf.Timestamp
+	65, // 4: controlplane.v1.Flag.updated_at:type_name -> google.protobuf.Timestamp
+	6,  // 5: controlplane.v1.Flag.rollout:type_name -> controlplane.v1.RolloutPlan
+	67, // 6: controlplane.v1.RolloutStage.duration:type_name -> google.protobuf.Duration
+	5,  // 7: controlplane.v1.RolloutPlan.stages:type_name -> controlplane.v1.RolloutStage
+	0,  // 8: controlplane.v1.RolloutPlan.state:type_name -> controlplane.v1.RolloutState
+	65, // 9: controlplane.v1.RolloutPlan.started_at:type_name -> google.protobuf.Timestamp
+	65, // 10: controlplane.v1.RolloutPlan.stage_started_at:type_name -> google.protobuf.Timestamp
+	66, // 11: controlplane.v1.Variant.payload:type_name -> google.protobuf.Value
+	7,  // 12: controlplane.v1.Experiment.variants:type_name -> controlplane.v1.Variant
+	65, // 13: controlplane.v1.Experiment.updated_at:type_name -> google.protobuf.Timestamp
+	65, // 14: controlplane.v1.RateLimit.updated_at:type_name -> google.protobuf.Timestamp
+	67, // 15: controlplane.v1.CircuitBreaker.window:type_name -> google.protobuf.Duration
+	67, // 16: controlplane.v1.CircuitBreaker.open_duration:type_name -> google.protobuf.Duration
+	65, // 17: controlplane.v1.CircuitBreaker.updated_at:type_name -> google.protobuf.Timestamp
+	3,  // 18: controlplane.v1.Snapshot.configs:type_name -> controlplane.v1.Config
+	4,  // 19: controlplane.v1.Snapshot.flags:type_name -> controlplane.v1.Flag
+	8,  // 20: controlplane.v1.Snapshot.experiments:type_name -> controlplane.v1.Experiment
+	65, // 21: controlplane.v1.Snapshot.updated_at:type_name -> google.protobuf.Timestamp
+	9,  // 22: controlplane.v1.Snapshot.rate_limits:type_name -> controlplane.v1.RateLimit
+	10, // 23: controlplane.v1.Snapshot.circuit_breakers:type_name -> controlplane.v1.CircuitBreaker
+	1,  // 24: controlplane.v1.Change.type:type_name -> controlplane.v1.ChangeType
+	66, // 25: controlplane.v1.Change.before:type_name -> google.protobuf.Value
+	66, // 26: controlplane.v1.Change.after:type_name -> google.protobuf.Value
+	65, // 27: controlplane.v1.Revision.created_at:type_name -> google.protobuf.Timestamp
+	11, // 28: controlplane.v1.Revision.snapshot:type_name -> controlplane.v1.Snapshot
+	65, // 29: controlplane.v1.AuditEvent.time:type_name -> google.protobuf.Timestamp
+	66, // 30: controlplane.v1.AuditEvent.before:type_name -> google.protobuf.Value
+	66, // 31: controlplane.v1.AuditEvent.after:type_name -> google.protobuf.Value
+	2,  // 32: controlplane.v1.CreateNamespaceResponse.namespace:type_name -> controlplane.v1.Namespace
+	2,  // 33: controlplane.v1.GetNamespaceResponse.namespace:type_name -> controlplane.v1.Namespace
+	2,  // 34: controlplane.v1.ListNamespacesResponse.namespaces:type_name -> controlplane.v1.Namespace
+	66, // 35: controlplane.v1.PutConfigRequest.value:type_name -> google.protobuf.Value
+	3,  // 36: controlplane.v1.PutConfigResponse.config:type_name -> controlplane.v1.Config
+	4,  // 37: controlplane.v1.PutFlagResponse.flag:type_name -> controlplane.v1.Flag
+	7,  // 38: controlplane.v1.PutExperimentRequest.variants:type_name -> controlplane.v1.Variant
+	8,  // 39: controlplane.v1.PutExperimentResponse.experiment:type_name -> controlplane.v1.Experiment
+	9,  // 40: controlplane.v1.PutRateLimitResponse.rate_limit:type_name -> controlplane.v1.RateLimit
+	67, // 41: controlplane.v1.PutCircuitBreakerRequest.window:type_name -> google.protobuf.Duration
+	67, // 42: controlplane.v1.PutCircuitBreakerRequest.open_duration:type_name -> google.protobuf.Duration
+	10, // 43: controlplane.v1.PutCircuitBreakerResponse.circuit_breaker:type_name -> controlplane.v1.CircuitBreaker
+	5,  // 44: controlplane.v1.StartRolloutRequest.stages:type_name -> controlplane.v1.RolloutStage
+	4,  // 45: controlplane.v1.StartRolloutResponse.flag:type_name -> controlplane.v1.Flag
+	4,  // 46: controlplane.v1.AdvanceRolloutResponse.flag:type_name -> controlplane.v1.Flag
+	4,  // 47: controlplane.v1.PauseRolloutResponse.flag:type_name -> controlplane.v1.Flag
+	4,  // 48: controlplane.v1.ResumeRolloutResponse.flag:type_name -> controlplane.v1.Flag
+	4,  // 49: controlplane.v1.AbortRolloutResponse.flag:type_name -> controlplane.v1.Flag
+	13, // 50: controlplane.v1.ListRevisionsResponse.revisions:type_name -> controlplane.v1.Revision
+	13, // 51: controlplane.v1.GetRevisionResponse.revision:type_name -> controlplane.v1.Revision
+	12, // 52: controlplane.v1.DiffRevisionsResponse.changes:type_name -> controlplane.v1.Change
+	12, // 53: controlplane.v1.RollbackResponse.changes:type_name -> controlplane.v1.Change
+	65, // 54: controlplane.v1.ListAuditEventsRequest.since:type_name -> google.protobuf.Timestamp
+	65, // 55: controlplane.v1.ListAuditEventsRequest.until:type_name -> google.protobuf.Timestamp
+	14, // 56: controlplane.v1.ListAuditEventsResponse.events:type_name -> controlplane.v1.AuditEvent
+	11, // 57: controlplane.v1.GetSnapshotResponse.snapshot:type_name -> controlplane.v1.Snapshot
+	11, // 58: controlplane.v1.WatchResponse.snapshot:type_name -> controlplane.v1.Snapshot
+	15, // 59: controlplane.v1.AdminService.CreateNamespace:input_type -> controlplane.v1.CreateNamespaceRequest
+	17, // 60: controlplane.v1.AdminService.GetNamespace:input_type -> controlplane.v1.GetNamespaceRequest
+	19, // 61: controlplane.v1.AdminService.ListNamespaces:input_type -> controlplane.v1.ListNamespacesRequest
+	21, // 62: controlplane.v1.AdminService.PutConfig:input_type -> controlplane.v1.PutConfigRequest
+	23, // 63: controlplane.v1.AdminService.DeleteConfig:input_type -> controlplane.v1.DeleteConfigRequest
+	25, // 64: controlplane.v1.AdminService.PutFlag:input_type -> controlplane.v1.PutFlagRequest
+	27, // 65: controlplane.v1.AdminService.DeleteFlag:input_type -> controlplane.v1.DeleteFlagRequest
+	29, // 66: controlplane.v1.AdminService.PutExperiment:input_type -> controlplane.v1.PutExperimentRequest
+	31, // 67: controlplane.v1.AdminService.DeleteExperiment:input_type -> controlplane.v1.DeleteExperimentRequest
+	33, // 68: controlplane.v1.AdminService.PutRateLimit:input_type -> controlplane.v1.PutRateLimitRequest
+	35, // 69: controlplane.v1.AdminService.DeleteRateLimit:input_type -> controlplane.v1.DeleteRateLimitRequest
+	37, // 70: controlplane.v1.AdminService.PutCircuitBreaker:input_type -> controlplane.v1.PutCircuitBreakerRequest
+	39, // 71: controlplane.v1.AdminService.DeleteCircuitBreaker:input_type -> controlplane.v1.DeleteCircuitBreakerRequest
+	41, // 72: controlplane.v1.AdminService.StartRollout:input_type -> controlplane.v1.StartRolloutRequest
+	43, // 73: controlplane.v1.AdminService.AdvanceRollout:input_type -> controlplane.v1.AdvanceRolloutRequest
+	45, // 74: controlplane.v1.AdminService.PauseRollout:input_type -> controlplane.v1.PauseRolloutRequest
+	47, // 75: controlplane.v1.AdminService.ResumeRollout:input_type -> controlplane.v1.ResumeRolloutRequest
+	49, // 76: controlplane.v1.AdminService.AbortRollout:input_type -> controlplane.v1.AbortRolloutRequest
+	51, // 77: controlplane.v1.AdminService.ListRevisions:input_type -> controlplane.v1.ListRevisionsRequest
+	53, // 78: controlplane.v1.AdminService.GetRevision:input_type -> controlplane.v1.GetRevisionRequest
+	55, // 79: controlplane.v1.AdminService.DiffRevisions:input_type -> controlplane.v1.DiffRevisionsRequest
+	57, // 80: controlplane.v1.AdminService.Rollback:input_type -> controlplane.v1.RollbackRequest
+	59, // 81: controlplane.v1.AdminService.ListAuditEvents:input_type -> controlplane.v1.ListAuditEventsRequest
+	61, // 82: controlplane.v1.DistributionService.GetSnapshot:input_type -> controlplane.v1.GetSnapshotRequest
+	63, // 83: controlplane.v1.DistributionService.Watch:input_type -> controlplane.v1.WatchRequest
+	16, // 84: controlplane.v1.AdminService.CreateNamespace:output_type -> controlplane.v1.CreateNamespaceResponse
+	18, // 85: controlplane.v1.AdminService.GetNamespace:output_type -> controlplane.v1.GetNamespaceResponse
+	20, // 86: controlplane.v1.AdminService.ListNamespaces:output_type -> controlplane.v1.ListNamespacesResponse
+	22, // 87: controlplane.v1.AdminService.PutConfig:output_type -> controlplane.v1.PutConfigResponse
+	24, // 88: controlplane.v1.AdminService.DeleteConfig:output_type -> controlplane.v1.DeleteConfigResponse
+	26, // 89: controlplane.v1.AdminService.PutFlag:output_type -> controlplane.v1.PutFlagResponse
+	28, // 90: controlplane.v1.AdminService.DeleteFlag:output_type -> controlplane.v1.DeleteFlagResponse
+	30, // 91: controlplane.v1.AdminService.PutExperiment:output_type -> controlplane.v1.PutExperimentResponse
+	32, // 92: controlplane.v1.AdminService.DeleteExperiment:output_type -> controlplane.v1.DeleteExperimentResponse
+	34, // 93: controlplane.v1.AdminService.PutRateLimit:output_type -> controlplane.v1.PutRateLimitResponse
+	36, // 94: controlplane.v1.AdminService.DeleteRateLimit:output_type -> controlplane.v1.DeleteRateLimitResponse
+	38, // 95: controlplane.v1.AdminService.PutCircuitBreaker:output_type -> controlplane.v1.PutCircuitBreakerResponse
+	40, // 96: controlplane.v1.AdminService.DeleteCircuitBreaker:output_type -> controlplane.v1.DeleteCircuitBreakerResponse
+	42, // 97: controlplane.v1.AdminService.StartRollout:output_type -> controlplane.v1.StartRolloutResponse
+	44, // 98: controlplane.v1.AdminService.AdvanceRollout:output_type -> controlplane.v1.AdvanceRolloutResponse
+	46, // 99: controlplane.v1.AdminService.PauseRollout:output_type -> controlplane.v1.PauseRolloutResponse
+	48, // 100: controlplane.v1.AdminService.ResumeRollout:output_type -> controlplane.v1.ResumeRolloutResponse
+	50, // 101: controlplane.v1.AdminService.AbortRollout:output_type -> controlplane.v1.AbortRolloutResponse
+	52, // 102: controlplane.v1.AdminService.ListRevisions:output_type -> controlplane.v1.ListRevisionsResponse
+	54, // 103: controlplane.v1.AdminService.GetRevision:output_type -> controlplane.v1.GetRevisionResponse
+	56, // 104: controlplane.v1.AdminService.DiffRevisions:output_type -> controlplane.v1.DiffRevisionsResponse
+	58, // 105: controlplane.v1.AdminService.Rollback:output_type -> controlplane.v1.RollbackResponse
+	60, // 106: controlplane.v1.AdminService.ListAuditEvents:output_type -> controlplane.v1.ListAuditEventsResponse
+	62, // 107: controlplane.v1.DistributionService.GetSnapshot:output_type -> controlplane.v1.GetSnapshotResponse
+	64, // 108: controlplane.v1.DistributionService.Watch:output_type -> controlplane.v1.WatchResponse
+	84, // [84:109] is the sub-list for method output_type
+	59, // [59:84] is the sub-list for method input_type
+	59, // [59:59] is the sub-list for extension type_name
+	59, // [59:59] is the sub-list for extension extendee
+	0,  // [0:59] is the sub-list for field type_name
 }
 
 func init() { file_controlplane_v1_controlplane_proto_init() }
@@ -1858,18 +4696,20 @@ func file_controlplane_v1_controlplane_proto_init() {
 	if File_controlplane_v1_controlplane_proto != nil {
 		return
 	}
+	file_controlplane_v1_controlplane_proto_msgTypes[23].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_controlplane_v1_controlplane_proto_rawDesc), len(file_controlplane_v1_controlplane_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   28,
+			NumEnums:      2,
+			NumMessages:   63,
 			NumExtensions: 0,
 			NumServices:   2,
 		},
 		GoTypes:           file_controlplane_v1_controlplane_proto_goTypes,
 		DependencyIndexes: file_controlplane_v1_controlplane_proto_depIdxs,
+		EnumInfos:         file_controlplane_v1_controlplane_proto_enumTypes,
 		MessageInfos:      file_controlplane_v1_controlplane_proto_msgTypes,
 	}.Build()
 	File_controlplane_v1_controlplane_proto = out.File

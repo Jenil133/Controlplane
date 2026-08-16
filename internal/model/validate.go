@@ -2,7 +2,9 @@ package model
 
 import (
 	"encoding/json"
+	"math"
 	"regexp"
+	"time"
 )
 
 // Limits enforced on every write.
@@ -16,6 +18,20 @@ const (
 	MaxVariants       = 32
 	MaxTotalWeight    = 1_000_000
 	MaxActorLen       = 128
+
+	MaxAllowlist     = 1000
+	MaxUnitIDLen     = 256
+	MaxRolloutStages = 20
+	MaxStageDuration = 30 * 24 * time.Hour
+
+	MaxRequestsPerSecond = 1_000_000
+	MaxBurst             = 1_000_000
+	MaxMinRequests       = 1_000_000
+	MinBreakerWindow     = time.Second
+	MaxBreakerWindow     = time.Hour
+	MinOpenDuration      = 100 * time.Millisecond
+	MaxOpenDuration      = time.Hour
+	MaxHalfOpenRequests  = 1000
 )
 
 var (
@@ -91,12 +107,138 @@ func (c Config) Validate() error {
 	return validateDescription(c.Description)
 }
 
-// Validate checks a flag before it is written.
+// ValidatePercent checks a rollout percentage: 0 to 100 with at most two
+// decimal places, matching the 10,000 buckets units are hashed into.
+func ValidatePercent(field string, p float64) error {
+	if math.IsNaN(p) || p < 0 || p > 100 {
+		return Invalidf("%s must be between 0 and 100, got %v", field, p)
+	}
+	if math.Abs(p*100-math.Round(p*100)) > 1e-6 {
+		return Invalidf("%s may have at most two decimal places, got %v", field, p)
+	}
+	return nil
+}
+
+// Validate checks a flag before it is written. Call Normalize first.
 func (f Flag) Validate() error {
 	if err := ValidateKey(f.Key); err != nil {
 		return err
 	}
-	return validateDescription(f.Description)
+	if err := validateDescription(f.Description); err != nil {
+		return err
+	}
+	if f.Salt == "" || len(f.Salt) > MaxSaltLen {
+		return Invalidf("flag %q: salt must be 1 to %d characters", f.Key, MaxSaltLen)
+	}
+	if err := ValidatePercent("rollout_percent", f.RolloutPercent); err != nil {
+		return err
+	}
+	if len(f.Allowlist) > MaxAllowlist {
+		return Invalidf("flag %q: allowlist has more than %d entries", f.Key, MaxAllowlist)
+	}
+	seen := make(map[string]bool, len(f.Allowlist))
+	for _, unit := range f.Allowlist {
+		if unit == "" || len(unit) > MaxUnitIDLen {
+			return Invalidf("flag %q: allowlist entries must be 1 to %d characters", f.Key, MaxUnitIDLen)
+		}
+		if seen[unit] {
+			return Invalidf("flag %q: duplicate allowlist entry %q", f.Key, unit)
+		}
+		seen[unit] = true
+	}
+	if f.Rollout != nil {
+		if err := f.Rollout.Validate(); err != nil {
+			return Invalidf("flag %q: rollout: %v", f.Key, err)
+		}
+		if p := f.Rollout.Stages[f.Rollout.CurrentStage].Percent; f.Rollout.State.Owns() && f.RolloutPercent != p {
+			return Invalidf("flag %q: rollout_percent %v differs from the %s rollout stage (%v)", f.Key, f.RolloutPercent, f.Rollout.State, p)
+		}
+	}
+	return nil
+}
+
+// ValidateRolloutStages checks the stages of a new rollout plan.
+func ValidateRolloutStages(stages []RolloutStage) error {
+	if len(stages) == 0 || len(stages) > MaxRolloutStages {
+		return Invalidf("a rollout needs 1 to %d stages", MaxRolloutStages)
+	}
+	for i, st := range stages {
+		if err := ValidatePercent("stage percent", st.Percent); err != nil {
+			return err
+		}
+		if i > 0 && st.Percent < stages[i-1].Percent {
+			return Invalidf("stage percentages must not decrease (stage %d: %v after %v)", i+1, st.Percent, stages[i-1].Percent)
+		}
+		if st.Duration < 0 || st.Duration > MaxStageDuration {
+			return Invalidf("stage %d duration must be between 0 and %v", i+1, MaxStageDuration)
+		}
+	}
+	if stages[len(stages)-1].Percent == 0 {
+		return Invalidf("the final rollout stage must be above 0%%")
+	}
+	return nil
+}
+
+// Validate checks a stored rollout plan.
+func (p RolloutPlan) Validate() error {
+	if err := ValidateRolloutStages(p.Stages); err != nil {
+		return err
+	}
+	if p.CurrentStage < 0 || p.CurrentStage >= len(p.Stages) {
+		return Invalidf("current stage %d out of range", p.CurrentStage)
+	}
+	switch p.State {
+	case RolloutActive, RolloutPaused, RolloutCompleted, RolloutAborted:
+	default:
+		return Invalidf("unknown rollout state %q", p.State)
+	}
+	if p.StartedAt.IsZero() || p.StageStartedAt.IsZero() {
+		return Invalidf("rollout timestamps are required")
+	}
+	return nil
+}
+
+// Validate checks a rate limit before it is written.
+func (r RateLimit) Validate() error {
+	if err := ValidateKey(r.Key); err != nil {
+		return err
+	}
+	if err := validateDescription(r.Description); err != nil {
+		return err
+	}
+	if math.IsNaN(r.RequestsPerSecond) || r.RequestsPerSecond <= 0 || r.RequestsPerSecond > MaxRequestsPerSecond {
+		return Invalidf("rate limit %q: requests_per_second must be above 0 and at most %d", r.Key, MaxRequestsPerSecond)
+	}
+	if r.Burst < 1 || r.Burst > MaxBurst {
+		return Invalidf("rate limit %q: burst must be 1 to %d", r.Key, MaxBurst)
+	}
+	return nil
+}
+
+// Validate checks a circuit breaker before it is written.
+func (c CircuitBreaker) Validate() error {
+	if err := ValidateKey(c.Key); err != nil {
+		return err
+	}
+	if err := validateDescription(c.Description); err != nil {
+		return err
+	}
+	if math.IsNaN(c.FailureRateThreshold) || c.FailureRateThreshold <= 0 || c.FailureRateThreshold > 1 {
+		return Invalidf("circuit breaker %q: failure_rate_threshold must be above 0 and at most 1", c.Key)
+	}
+	if c.MinRequests < 1 || c.MinRequests > MaxMinRequests {
+		return Invalidf("circuit breaker %q: min_requests must be 1 to %d", c.Key, MaxMinRequests)
+	}
+	if c.Window < MinBreakerWindow || c.Window > MaxBreakerWindow {
+		return Invalidf("circuit breaker %q: window must be between %v and %v", c.Key, MinBreakerWindow, MaxBreakerWindow)
+	}
+	if c.OpenDuration < MinOpenDuration || c.OpenDuration > MaxOpenDuration {
+		return Invalidf("circuit breaker %q: open_duration must be between %v and %v", c.Key, MinOpenDuration, MaxOpenDuration)
+	}
+	if c.HalfOpenMaxRequests < 1 || c.HalfOpenMaxRequests > MaxHalfOpenRequests {
+		return Invalidf("circuit breaker %q: half_open_max_requests must be 1 to %d", c.Key, MaxHalfOpenRequests)
+	}
+	return nil
 }
 
 // Validate checks an experiment before it is written. Call Normalize first.

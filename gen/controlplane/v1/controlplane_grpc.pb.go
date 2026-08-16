@@ -19,23 +19,41 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AdminService_CreateNamespace_FullMethodName  = "/controlplane.v1.AdminService/CreateNamespace"
-	AdminService_GetNamespace_FullMethodName     = "/controlplane.v1.AdminService/GetNamespace"
-	AdminService_ListNamespaces_FullMethodName   = "/controlplane.v1.AdminService/ListNamespaces"
-	AdminService_PutConfig_FullMethodName        = "/controlplane.v1.AdminService/PutConfig"
-	AdminService_DeleteConfig_FullMethodName     = "/controlplane.v1.AdminService/DeleteConfig"
-	AdminService_PutFlag_FullMethodName          = "/controlplane.v1.AdminService/PutFlag"
-	AdminService_DeleteFlag_FullMethodName       = "/controlplane.v1.AdminService/DeleteFlag"
-	AdminService_PutExperiment_FullMethodName    = "/controlplane.v1.AdminService/PutExperiment"
-	AdminService_DeleteExperiment_FullMethodName = "/controlplane.v1.AdminService/DeleteExperiment"
+	AdminService_CreateNamespace_FullMethodName      = "/controlplane.v1.AdminService/CreateNamespace"
+	AdminService_GetNamespace_FullMethodName         = "/controlplane.v1.AdminService/GetNamespace"
+	AdminService_ListNamespaces_FullMethodName       = "/controlplane.v1.AdminService/ListNamespaces"
+	AdminService_PutConfig_FullMethodName            = "/controlplane.v1.AdminService/PutConfig"
+	AdminService_DeleteConfig_FullMethodName         = "/controlplane.v1.AdminService/DeleteConfig"
+	AdminService_PutFlag_FullMethodName              = "/controlplane.v1.AdminService/PutFlag"
+	AdminService_DeleteFlag_FullMethodName           = "/controlplane.v1.AdminService/DeleteFlag"
+	AdminService_PutExperiment_FullMethodName        = "/controlplane.v1.AdminService/PutExperiment"
+	AdminService_DeleteExperiment_FullMethodName     = "/controlplane.v1.AdminService/DeleteExperiment"
+	AdminService_PutRateLimit_FullMethodName         = "/controlplane.v1.AdminService/PutRateLimit"
+	AdminService_DeleteRateLimit_FullMethodName      = "/controlplane.v1.AdminService/DeleteRateLimit"
+	AdminService_PutCircuitBreaker_FullMethodName    = "/controlplane.v1.AdminService/PutCircuitBreaker"
+	AdminService_DeleteCircuitBreaker_FullMethodName = "/controlplane.v1.AdminService/DeleteCircuitBreaker"
+	AdminService_StartRollout_FullMethodName         = "/controlplane.v1.AdminService/StartRollout"
+	AdminService_AdvanceRollout_FullMethodName       = "/controlplane.v1.AdminService/AdvanceRollout"
+	AdminService_PauseRollout_FullMethodName         = "/controlplane.v1.AdminService/PauseRollout"
+	AdminService_ResumeRollout_FullMethodName        = "/controlplane.v1.AdminService/ResumeRollout"
+	AdminService_AbortRollout_FullMethodName         = "/controlplane.v1.AdminService/AbortRollout"
+	AdminService_ListRevisions_FullMethodName        = "/controlplane.v1.AdminService/ListRevisions"
+	AdminService_GetRevision_FullMethodName          = "/controlplane.v1.AdminService/GetRevision"
+	AdminService_DiffRevisions_FullMethodName        = "/controlplane.v1.AdminService/DiffRevisions"
+	AdminService_Rollback_FullMethodName             = "/controlplane.v1.AdminService/Rollback"
+	AdminService_ListAuditEvents_FullMethodName      = "/controlplane.v1.AdminService/ListAuditEvents"
 )
 
 // AdminServiceClient is the client API for AdminService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// AdminService mutates control plane state. Each successful write produces a
-// new namespace revision that is pushed to every watcher of that namespace.
+// AdminService mutates and inspects control plane state. Each successful
+// write produces a new namespace revision that is pushed to every watcher.
+//
+// Put and Delete requests accept expected_revision for optimistic
+// concurrency: when non-zero the write fails with ABORTED unless the entry's
+// current revision equals it.
 type AdminServiceClient interface {
 	CreateNamespace(ctx context.Context, in *CreateNamespaceRequest, opts ...grpc.CallOption) (*CreateNamespaceResponse, error)
 	GetNamespace(ctx context.Context, in *GetNamespaceRequest, opts ...grpc.CallOption) (*GetNamespaceResponse, error)
@@ -46,6 +64,24 @@ type AdminServiceClient interface {
 	DeleteFlag(ctx context.Context, in *DeleteFlagRequest, opts ...grpc.CallOption) (*DeleteFlagResponse, error)
 	PutExperiment(ctx context.Context, in *PutExperimentRequest, opts ...grpc.CallOption) (*PutExperimentResponse, error)
 	DeleteExperiment(ctx context.Context, in *DeleteExperimentRequest, opts ...grpc.CallOption) (*DeleteExperimentResponse, error)
+	PutRateLimit(ctx context.Context, in *PutRateLimitRequest, opts ...grpc.CallOption) (*PutRateLimitResponse, error)
+	DeleteRateLimit(ctx context.Context, in *DeleteRateLimitRequest, opts ...grpc.CallOption) (*DeleteRateLimitResponse, error)
+	PutCircuitBreaker(ctx context.Context, in *PutCircuitBreakerRequest, opts ...grpc.CallOption) (*PutCircuitBreakerResponse, error)
+	DeleteCircuitBreaker(ctx context.Context, in *DeleteCircuitBreakerRequest, opts ...grpc.CallOption) (*DeleteCircuitBreakerResponse, error)
+	// Staged rollouts of a flag's rollout_percent.
+	StartRollout(ctx context.Context, in *StartRolloutRequest, opts ...grpc.CallOption) (*StartRolloutResponse, error)
+	AdvanceRollout(ctx context.Context, in *AdvanceRolloutRequest, opts ...grpc.CallOption) (*AdvanceRolloutResponse, error)
+	PauseRollout(ctx context.Context, in *PauseRolloutRequest, opts ...grpc.CallOption) (*PauseRolloutResponse, error)
+	ResumeRollout(ctx context.Context, in *ResumeRolloutRequest, opts ...grpc.CallOption) (*ResumeRolloutResponse, error)
+	AbortRollout(ctx context.Context, in *AbortRolloutRequest, opts ...grpc.CallOption) (*AbortRolloutResponse, error)
+	// History and rollback.
+	ListRevisions(ctx context.Context, in *ListRevisionsRequest, opts ...grpc.CallOption) (*ListRevisionsResponse, error)
+	GetRevision(ctx context.Context, in *GetRevisionRequest, opts ...grpc.CallOption) (*GetRevisionResponse, error)
+	DiffRevisions(ctx context.Context, in *DiffRevisionsRequest, opts ...grpc.CallOption) (*DiffRevisionsResponse, error)
+	// Rollback restores a namespace to the state it had at an earlier revision
+	// by writing a new revision; history is never rewritten.
+	Rollback(ctx context.Context, in *RollbackRequest, opts ...grpc.CallOption) (*RollbackResponse, error)
+	ListAuditEvents(ctx context.Context, in *ListAuditEventsRequest, opts ...grpc.CallOption) (*ListAuditEventsResponse, error)
 }
 
 type adminServiceClient struct {
@@ -146,12 +182,156 @@ func (c *adminServiceClient) DeleteExperiment(ctx context.Context, in *DeleteExp
 	return out, nil
 }
 
+func (c *adminServiceClient) PutRateLimit(ctx context.Context, in *PutRateLimitRequest, opts ...grpc.CallOption) (*PutRateLimitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PutRateLimitResponse)
+	err := c.cc.Invoke(ctx, AdminService_PutRateLimit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) DeleteRateLimit(ctx context.Context, in *DeleteRateLimitRequest, opts ...grpc.CallOption) (*DeleteRateLimitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteRateLimitResponse)
+	err := c.cc.Invoke(ctx, AdminService_DeleteRateLimit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) PutCircuitBreaker(ctx context.Context, in *PutCircuitBreakerRequest, opts ...grpc.CallOption) (*PutCircuitBreakerResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PutCircuitBreakerResponse)
+	err := c.cc.Invoke(ctx, AdminService_PutCircuitBreaker_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) DeleteCircuitBreaker(ctx context.Context, in *DeleteCircuitBreakerRequest, opts ...grpc.CallOption) (*DeleteCircuitBreakerResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteCircuitBreakerResponse)
+	err := c.cc.Invoke(ctx, AdminService_DeleteCircuitBreaker_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) StartRollout(ctx context.Context, in *StartRolloutRequest, opts ...grpc.CallOption) (*StartRolloutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StartRolloutResponse)
+	err := c.cc.Invoke(ctx, AdminService_StartRollout_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) AdvanceRollout(ctx context.Context, in *AdvanceRolloutRequest, opts ...grpc.CallOption) (*AdvanceRolloutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AdvanceRolloutResponse)
+	err := c.cc.Invoke(ctx, AdminService_AdvanceRollout_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) PauseRollout(ctx context.Context, in *PauseRolloutRequest, opts ...grpc.CallOption) (*PauseRolloutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PauseRolloutResponse)
+	err := c.cc.Invoke(ctx, AdminService_PauseRollout_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) ResumeRollout(ctx context.Context, in *ResumeRolloutRequest, opts ...grpc.CallOption) (*ResumeRolloutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResumeRolloutResponse)
+	err := c.cc.Invoke(ctx, AdminService_ResumeRollout_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) AbortRollout(ctx context.Context, in *AbortRolloutRequest, opts ...grpc.CallOption) (*AbortRolloutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AbortRolloutResponse)
+	err := c.cc.Invoke(ctx, AdminService_AbortRollout_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) ListRevisions(ctx context.Context, in *ListRevisionsRequest, opts ...grpc.CallOption) (*ListRevisionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRevisionsResponse)
+	err := c.cc.Invoke(ctx, AdminService_ListRevisions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) GetRevision(ctx context.Context, in *GetRevisionRequest, opts ...grpc.CallOption) (*GetRevisionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetRevisionResponse)
+	err := c.cc.Invoke(ctx, AdminService_GetRevision_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) DiffRevisions(ctx context.Context, in *DiffRevisionsRequest, opts ...grpc.CallOption) (*DiffRevisionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DiffRevisionsResponse)
+	err := c.cc.Invoke(ctx, AdminService_DiffRevisions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) Rollback(ctx context.Context, in *RollbackRequest, opts ...grpc.CallOption) (*RollbackResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RollbackResponse)
+	err := c.cc.Invoke(ctx, AdminService_Rollback_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) ListAuditEvents(ctx context.Context, in *ListAuditEventsRequest, opts ...grpc.CallOption) (*ListAuditEventsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAuditEventsResponse)
+	err := c.cc.Invoke(ctx, AdminService_ListAuditEvents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServiceServer is the server API for AdminService service.
 // All implementations must embed UnimplementedAdminServiceServer
 // for forward compatibility.
 //
-// AdminService mutates control plane state. Each successful write produces a
-// new namespace revision that is pushed to every watcher of that namespace.
+// AdminService mutates and inspects control plane state. Each successful
+// write produces a new namespace revision that is pushed to every watcher.
+//
+// Put and Delete requests accept expected_revision for optimistic
+// concurrency: when non-zero the write fails with ABORTED unless the entry's
+// current revision equals it.
 type AdminServiceServer interface {
 	CreateNamespace(context.Context, *CreateNamespaceRequest) (*CreateNamespaceResponse, error)
 	GetNamespace(context.Context, *GetNamespaceRequest) (*GetNamespaceResponse, error)
@@ -162,6 +342,24 @@ type AdminServiceServer interface {
 	DeleteFlag(context.Context, *DeleteFlagRequest) (*DeleteFlagResponse, error)
 	PutExperiment(context.Context, *PutExperimentRequest) (*PutExperimentResponse, error)
 	DeleteExperiment(context.Context, *DeleteExperimentRequest) (*DeleteExperimentResponse, error)
+	PutRateLimit(context.Context, *PutRateLimitRequest) (*PutRateLimitResponse, error)
+	DeleteRateLimit(context.Context, *DeleteRateLimitRequest) (*DeleteRateLimitResponse, error)
+	PutCircuitBreaker(context.Context, *PutCircuitBreakerRequest) (*PutCircuitBreakerResponse, error)
+	DeleteCircuitBreaker(context.Context, *DeleteCircuitBreakerRequest) (*DeleteCircuitBreakerResponse, error)
+	// Staged rollouts of a flag's rollout_percent.
+	StartRollout(context.Context, *StartRolloutRequest) (*StartRolloutResponse, error)
+	AdvanceRollout(context.Context, *AdvanceRolloutRequest) (*AdvanceRolloutResponse, error)
+	PauseRollout(context.Context, *PauseRolloutRequest) (*PauseRolloutResponse, error)
+	ResumeRollout(context.Context, *ResumeRolloutRequest) (*ResumeRolloutResponse, error)
+	AbortRollout(context.Context, *AbortRolloutRequest) (*AbortRolloutResponse, error)
+	// History and rollback.
+	ListRevisions(context.Context, *ListRevisionsRequest) (*ListRevisionsResponse, error)
+	GetRevision(context.Context, *GetRevisionRequest) (*GetRevisionResponse, error)
+	DiffRevisions(context.Context, *DiffRevisionsRequest) (*DiffRevisionsResponse, error)
+	// Rollback restores a namespace to the state it had at an earlier revision
+	// by writing a new revision; history is never rewritten.
+	Rollback(context.Context, *RollbackRequest) (*RollbackResponse, error)
+	ListAuditEvents(context.Context, *ListAuditEventsRequest) (*ListAuditEventsResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -198,6 +396,48 @@ func (UnimplementedAdminServiceServer) PutExperiment(context.Context, *PutExperi
 }
 func (UnimplementedAdminServiceServer) DeleteExperiment(context.Context, *DeleteExperimentRequest) (*DeleteExperimentResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteExperiment not implemented")
+}
+func (UnimplementedAdminServiceServer) PutRateLimit(context.Context, *PutRateLimitRequest) (*PutRateLimitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PutRateLimit not implemented")
+}
+func (UnimplementedAdminServiceServer) DeleteRateLimit(context.Context, *DeleteRateLimitRequest) (*DeleteRateLimitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteRateLimit not implemented")
+}
+func (UnimplementedAdminServiceServer) PutCircuitBreaker(context.Context, *PutCircuitBreakerRequest) (*PutCircuitBreakerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PutCircuitBreaker not implemented")
+}
+func (UnimplementedAdminServiceServer) DeleteCircuitBreaker(context.Context, *DeleteCircuitBreakerRequest) (*DeleteCircuitBreakerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteCircuitBreaker not implemented")
+}
+func (UnimplementedAdminServiceServer) StartRollout(context.Context, *StartRolloutRequest) (*StartRolloutResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartRollout not implemented")
+}
+func (UnimplementedAdminServiceServer) AdvanceRollout(context.Context, *AdvanceRolloutRequest) (*AdvanceRolloutResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AdvanceRollout not implemented")
+}
+func (UnimplementedAdminServiceServer) PauseRollout(context.Context, *PauseRolloutRequest) (*PauseRolloutResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PauseRollout not implemented")
+}
+func (UnimplementedAdminServiceServer) ResumeRollout(context.Context, *ResumeRolloutRequest) (*ResumeRolloutResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResumeRollout not implemented")
+}
+func (UnimplementedAdminServiceServer) AbortRollout(context.Context, *AbortRolloutRequest) (*AbortRolloutResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AbortRollout not implemented")
+}
+func (UnimplementedAdminServiceServer) ListRevisions(context.Context, *ListRevisionsRequest) (*ListRevisionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRevisions not implemented")
+}
+func (UnimplementedAdminServiceServer) GetRevision(context.Context, *GetRevisionRequest) (*GetRevisionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRevision not implemented")
+}
+func (UnimplementedAdminServiceServer) DiffRevisions(context.Context, *DiffRevisionsRequest) (*DiffRevisionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DiffRevisions not implemented")
+}
+func (UnimplementedAdminServiceServer) Rollback(context.Context, *RollbackRequest) (*RollbackResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Rollback not implemented")
+}
+func (UnimplementedAdminServiceServer) ListAuditEvents(context.Context, *ListAuditEventsRequest) (*ListAuditEventsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAuditEvents not implemented")
 }
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
@@ -382,6 +622,258 @@ func _AdminService_DeleteExperiment_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_PutRateLimit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PutRateLimitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).PutRateLimit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_PutRateLimit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).PutRateLimit(ctx, req.(*PutRateLimitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_DeleteRateLimit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteRateLimitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).DeleteRateLimit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_DeleteRateLimit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).DeleteRateLimit(ctx, req.(*DeleteRateLimitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_PutCircuitBreaker_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PutCircuitBreakerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).PutCircuitBreaker(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_PutCircuitBreaker_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).PutCircuitBreaker(ctx, req.(*PutCircuitBreakerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_DeleteCircuitBreaker_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteCircuitBreakerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).DeleteCircuitBreaker(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_DeleteCircuitBreaker_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).DeleteCircuitBreaker(ctx, req.(*DeleteCircuitBreakerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_StartRollout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartRolloutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).StartRollout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_StartRollout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).StartRollout(ctx, req.(*StartRolloutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_AdvanceRollout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdvanceRolloutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).AdvanceRollout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_AdvanceRollout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).AdvanceRollout(ctx, req.(*AdvanceRolloutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_PauseRollout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PauseRolloutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).PauseRollout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_PauseRollout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).PauseRollout(ctx, req.(*PauseRolloutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_ResumeRollout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResumeRolloutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).ResumeRollout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_ResumeRollout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).ResumeRollout(ctx, req.(*ResumeRolloutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_AbortRollout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AbortRolloutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).AbortRollout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_AbortRollout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).AbortRollout(ctx, req.(*AbortRolloutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_ListRevisions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRevisionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).ListRevisions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_ListRevisions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).ListRevisions(ctx, req.(*ListRevisionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_GetRevision_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRevisionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).GetRevision(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_GetRevision_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).GetRevision(ctx, req.(*GetRevisionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_DiffRevisions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DiffRevisionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).DiffRevisions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_DiffRevisions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).DiffRevisions(ctx, req.(*DiffRevisionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_Rollback_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RollbackRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).Rollback(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_Rollback_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).Rollback(ctx, req.(*RollbackRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_ListAuditEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAuditEventsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).ListAuditEvents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_ListAuditEvents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).ListAuditEvents(ctx, req.(*ListAuditEventsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -424,6 +916,62 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteExperiment",
 			Handler:    _AdminService_DeleteExperiment_Handler,
+		},
+		{
+			MethodName: "PutRateLimit",
+			Handler:    _AdminService_PutRateLimit_Handler,
+		},
+		{
+			MethodName: "DeleteRateLimit",
+			Handler:    _AdminService_DeleteRateLimit_Handler,
+		},
+		{
+			MethodName: "PutCircuitBreaker",
+			Handler:    _AdminService_PutCircuitBreaker_Handler,
+		},
+		{
+			MethodName: "DeleteCircuitBreaker",
+			Handler:    _AdminService_DeleteCircuitBreaker_Handler,
+		},
+		{
+			MethodName: "StartRollout",
+			Handler:    _AdminService_StartRollout_Handler,
+		},
+		{
+			MethodName: "AdvanceRollout",
+			Handler:    _AdminService_AdvanceRollout_Handler,
+		},
+		{
+			MethodName: "PauseRollout",
+			Handler:    _AdminService_PauseRollout_Handler,
+		},
+		{
+			MethodName: "ResumeRollout",
+			Handler:    _AdminService_ResumeRollout_Handler,
+		},
+		{
+			MethodName: "AbortRollout",
+			Handler:    _AdminService_AbortRollout_Handler,
+		},
+		{
+			MethodName: "ListRevisions",
+			Handler:    _AdminService_ListRevisions_Handler,
+		},
+		{
+			MethodName: "GetRevision",
+			Handler:    _AdminService_GetRevision_Handler,
+		},
+		{
+			MethodName: "DiffRevisions",
+			Handler:    _AdminService_DiffRevisions_Handler,
+		},
+		{
+			MethodName: "Rollback",
+			Handler:    _AdminService_Rollback_Handler,
+		},
+		{
+			MethodName: "ListAuditEvents",
+			Handler:    _AdminService_ListAuditEvents_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

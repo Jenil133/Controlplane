@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package controlplane.v1;
 
+import "google/protobuf/duration.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
@@ -15,6 +16,7 @@ message Namespace {
   int64 revision = 3;
   google.protobuf.Timestamp created_at = 4;
   google.protobuf.Timestamp updated_at = 5;
+  string created_by = 6;
 }
 
 // Config is an arbitrary JSON value addressed by key.
@@ -28,7 +30,15 @@ message Config {
   string updated_by = 6;
 }
 
-// Flag is a boolean feature flag.
+// Flag is a feature flag with an optional percentage rollout.
+//
+// Evaluation for a unit (user ID, account ID, ...):
+//   1. flag disabled                                -> off
+//   2. unit in allowlist                            -> on
+//   3. bucket(salt, unit) < round(rollout_percent * 100) -> on
+//      (buckets are 0..9999; round is half away from zero, clamped to
+//      [0, 10000]; pkg/bucketing documents the algorithm normatively)
+// An empty unit ID is on only when rollout_percent is 100.
 message Flag {
   string key = 1;
   bool enabled = 2;
@@ -36,6 +46,46 @@ message Flag {
   int64 revision = 4;
   google.protobuf.Timestamp updated_at = 5;
   string updated_by = 6;
+  // Share of units, 0 to 100 in steps of 0.01, that see the flag on.
+  double rollout_percent = 7;
+  // Hashing salt for rollout bucketing. Defaults to the flag key.
+  string salt = 8;
+  // Units that always see the flag on while it is enabled.
+  repeated string allowlist = 9;
+  // Staged rollout driving rollout_percent, if one was ever started.
+  RolloutPlan rollout = 10;
+}
+
+enum RolloutState {
+  ROLLOUT_STATE_UNSPECIFIED = 0;
+  // Advancing automatically through stages that have a duration.
+  ROLLOUT_STATE_ACTIVE = 1;
+  // Holding at the current stage until resumed or advanced manually.
+  ROLLOUT_STATE_PAUSED = 2;
+  // Reached the final stage.
+  ROLLOUT_STATE_COMPLETED = 3;
+  // Stopped; rollout_percent was set to 0.
+  ROLLOUT_STATE_ABORTED = 4;
+}
+
+message RolloutStage {
+  // Rollout percentage while this stage is current.
+  double percent = 1;
+  // Minimum time at this stage before the controller advances automatically.
+  // Zero means the stage only advances manually.
+  google.protobuf.Duration duration = 2;
+}
+
+// RolloutPlan steps a flag's rollout_percent through increasing stages.
+// While ACTIVE or PAUSED the plan owns rollout_percent.
+message RolloutPlan {
+  repeated RolloutStage stages = 1;
+  // Index into stages.
+  int32 current_stage = 2;
+  RolloutState state = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp stage_started_at = 5;
+  string started_by = 6;
 }
 
 message Variant {
@@ -60,20 +110,112 @@ message Experiment {
   string updated_by = 8;
 }
 
+// RateLimit is a token-bucket limit that every client instance enforces
+// locally for the matching key (for example a route or method name).
+message RateLimit {
+  string key = 1;
+  bool enabled = 2;
+  string description = 3;
+  // Sustained rate: tokens added to the bucket per second.
+  double requests_per_second = 4;
+  // Bucket capacity: the largest burst allowed after a quiet period.
+  uint32 burst = 5;
+  int64 revision = 6;
+  google.protobuf.Timestamp updated_at = 7;
+  string updated_by = 8;
+}
+
+// CircuitBreaker opens when the failure rate over a rolling window reaches a
+// threshold, fails calls fast while open, then lets trial calls through.
+message CircuitBreaker {
+  string key = 1;
+  bool enabled = 2;
+  string description = 3;
+  // Fraction of failed calls, 0 < x <= 1, that opens the breaker.
+  double failure_rate_threshold = 4;
+  // Calls needed in the window before the failure rate is evaluated.
+  uint32 min_requests = 5;
+  // Rolling window over which calls are counted.
+  google.protobuf.Duration window = 6;
+  // How long the breaker stays open before allowing trial calls.
+  google.protobuf.Duration open_duration = 7;
+  // Trial calls allowed while half-open; all must succeed to close again.
+  uint32 half_open_max_requests = 8;
+  int64 revision = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  string updated_by = 11;
+}
+
 // Snapshot is the complete state of a namespace at one revision.
 message Snapshot {
   string namespace = 1;
   int64 revision = 2;
-  // Sorted by key.
+  // Every list is sorted by key.
   repeated Config configs = 3;
   repeated Flag flags = 4;
   repeated Experiment experiments = 5;
   // When the change that produced this revision was committed.
   google.protobuf.Timestamp updated_at = 6;
+  repeated RateLimit rate_limits = 7;
+  repeated CircuitBreaker circuit_breakers = 8;
 }
 
-// AdminService mutates control plane state. Each successful write produces a
-// new namespace revision that is pushed to every watcher of that namespace.
+enum ChangeType {
+  CHANGE_TYPE_UNSPECIFIED = 0;
+  CHANGE_TYPE_ADDED = 1;
+  CHANGE_TYPE_MODIFIED = 2;
+  CHANGE_TYPE_REMOVED = 3;
+}
+
+// Change describes how one entry differs between two states of a namespace.
+message Change {
+  // config, flag, experiment, rate_limit or circuit_breaker.
+  string entity_type = 1;
+  string key = 2;
+  ChangeType type = 3;
+  // The entry as stored (snake_case JSON). Absent when added.
+  google.protobuf.Value before = 4;
+  // Absent when removed.
+  google.protobuf.Value after = 5;
+}
+
+// Revision is one entry in a namespace's history.
+message Revision {
+  string namespace = 1;
+  int64 revision = 2;
+  string actor = 3;
+  google.protobuf.Timestamp created_at = 4;
+  // Human-readable summary, e.g. "update flag new-cart" or "rollback to revision 7".
+  string summary = 5;
+  // Full namespace state at this revision. Only set by GetRevision.
+  Snapshot snapshot = 6;
+}
+
+// AuditEvent records one change: who made it, when, and what it changed.
+message AuditEvent {
+  int64 id = 1;
+  string namespace = 2;
+  int64 revision = 3;
+  string actor = 4;
+  google.protobuf.Timestamp time = 5;
+  // create, update, delete, rollback, rollout.start, rollout.advance,
+  // rollout.pause, rollout.resume or rollout.abort.
+  string action = 6;
+  // namespace, config, flag, experiment, rate_limit or circuit_breaker.
+  string entity_type = 7;
+  string entity_key = 8;
+  // The entry before and after the change (snake_case JSON).
+  google.protobuf.Value before = 9;
+  google.protobuf.Value after = 10;
+  string message = 11;
+}
+
+// AdminService mutates and inspects control plane state. Each successful
+// write produces a new namespace revision that is pushed to every watcher.
+//
+// Put and Delete requests accept expected_revision for optimistic
+// concurrency: when non-zero the write fails with ABORTED unless the entry's
+// current revision equals it.
 service AdminService {
   rpc CreateNamespace(CreateNamespaceRequest) returns (CreateNamespaceResponse);
   rpc GetNamespace(GetNamespaceRequest) returns (GetNamespaceResponse);
@@ -87,6 +229,29 @@ service AdminService {
 
   rpc PutExperiment(PutExperimentRequest) returns (PutExperimentResponse);
   rpc DeleteExperiment(DeleteExperimentRequest) returns (DeleteExperimentResponse);
+
+  rpc PutRateLimit(PutRateLimitRequest) returns (PutRateLimitResponse);
+  rpc DeleteRateLimit(DeleteRateLimitRequest) returns (DeleteRateLimitResponse);
+
+  rpc PutCircuitBreaker(PutCircuitBreakerRequest) returns (PutCircuitBreakerResponse);
+  rpc DeleteCircuitBreaker(DeleteCircuitBreakerRequest) returns (DeleteCircuitBreakerResponse);
+
+  // Staged rollouts of a flag's rollout_percent.
+  rpc StartRollout(StartRolloutRequest) returns (StartRolloutResponse);
+  rpc AdvanceRollout(AdvanceRolloutRequest) returns (AdvanceRolloutResponse);
+  rpc PauseRollout(PauseRolloutRequest) returns (PauseRolloutResponse);
+  rpc ResumeRollout(ResumeRolloutRequest) returns (ResumeRolloutResponse);
+  rpc AbortRollout(AbortRolloutRequest) returns (AbortRolloutResponse);
+
+  // History and rollback.
+  rpc ListRevisions(ListRevisionsRequest) returns (ListRevisionsResponse);
+  rpc GetRevision(GetRevisionRequest) returns (GetRevisionResponse);
+  rpc DiffRevisions(DiffRevisionsRequest) returns (DiffRevisionsResponse);
+  // Rollback restores a namespace to the state it had at an earlier revision
+  // by writing a new revision; history is never rewritten.
+  rpc Rollback(RollbackRequest) returns (RollbackResponse);
+
+  rpc ListAuditEvents(ListAuditEventsRequest) returns (ListAuditEventsResponse);
 }
 
 message CreateNamespaceRequest {
@@ -117,6 +282,7 @@ message PutConfigRequest {
   string key = 2;
   google.protobuf.Value value = 3;
   string description = 4;
+  int64 expected_revision = 5;
 }
 
 message PutConfigResponse {
@@ -126,6 +292,7 @@ message PutConfigResponse {
 message DeleteConfigRequest {
   string namespace = 1;
   string key = 2;
+  int64 expected_revision = 3;
 }
 
 message DeleteConfigResponse {
@@ -137,6 +304,14 @@ message PutFlagRequest {
   string key = 2;
   bool enabled = 3;
   string description = 4;
+  int64 expected_revision = 5;
+  // Unset keeps the current value (100 for a new flag). Must not change while
+  // a rollout is ACTIVE or PAUSED.
+  optional double rollout_percent = 6;
+  // Empty keeps the current salt (the key for a new flag).
+  string salt = 7;
+  // Replaces the allowlist.
+  repeated string allowlist = 8;
 }
 
 message PutFlagResponse {
@@ -146,6 +321,7 @@ message PutFlagResponse {
 message DeleteFlagRequest {
   string namespace = 1;
   string key = 2;
+  int64 expected_revision = 3;
 }
 
 message DeleteFlagResponse {
@@ -159,6 +335,7 @@ message PutExperimentRequest {
   string description = 4;
   string salt = 5;
   repeated Variant variants = 6;
+  int64 expected_revision = 7;
 }
 
 message PutExperimentResponse {
@@ -168,10 +345,181 @@ message PutExperimentResponse {
 message DeleteExperimentRequest {
   string namespace = 1;
   string key = 2;
+  int64 expected_revision = 3;
 }
 
 message DeleteExperimentResponse {
   int64 revision = 1;
+}
+
+message PutRateLimitRequest {
+  string namespace = 1;
+  string key = 2;
+  bool enabled = 3;
+  string description = 4;
+  double requests_per_second = 5;
+  uint32 burst = 6;
+  int64 expected_revision = 7;
+}
+
+message PutRateLimitResponse {
+  RateLimit rate_limit = 1;
+}
+
+message DeleteRateLimitRequest {
+  string namespace = 1;
+  string key = 2;
+  int64 expected_revision = 3;
+}
+
+message DeleteRateLimitResponse {
+  int64 revision = 1;
+}
+
+message PutCircuitBreakerRequest {
+  string namespace = 1;
+  string key = 2;
+  bool enabled = 3;
+  string description = 4;
+  double failure_rate_threshold = 5;
+  uint32 min_requests = 6;
+  google.protobuf.Duration window = 7;
+  google.protobuf.Duration open_duration = 8;
+  uint32 half_open_max_requests = 9;
+  int64 expected_revision = 10;
+}
+
+message PutCircuitBreakerResponse {
+  CircuitBreaker circuit_breaker = 1;
+}
+
+message DeleteCircuitBreakerRequest {
+  string namespace = 1;
+  string key = 2;
+  int64 expected_revision = 3;
+}
+
+message DeleteCircuitBreakerResponse {
+  int64 revision = 1;
+}
+
+message StartRolloutRequest {
+  string namespace = 1;
+  string flag = 2;
+  // At least one stage; percentages must not decrease.
+  repeated RolloutStage stages = 3;
+}
+
+message StartRolloutResponse {
+  Flag flag = 1;
+}
+
+message AdvanceRolloutRequest {
+  string namespace = 1;
+  string flag = 2;
+}
+
+message AdvanceRolloutResponse {
+  Flag flag = 1;
+}
+
+message PauseRolloutRequest {
+  string namespace = 1;
+  string flag = 2;
+}
+
+message PauseRolloutResponse {
+  Flag flag = 1;
+}
+
+message ResumeRolloutRequest {
+  string namespace = 1;
+  string flag = 2;
+}
+
+message ResumeRolloutResponse {
+  Flag flag = 1;
+}
+
+message AbortRolloutRequest {
+  string namespace = 1;
+  string flag = 2;
+}
+
+message AbortRolloutResponse {
+  Flag flag = 1;
+}
+
+message ListRevisionsRequest {
+  string namespace = 1;
+  // 1 to 500; 0 means 50.
+  int32 page_size = 2;
+  // Only revisions older than this one; 0 starts from the latest.
+  int64 before_revision = 3;
+}
+
+message ListRevisionsResponse {
+  // Newest first, without snapshots.
+  repeated Revision revisions = 1;
+  // Pass as before_revision to get the next page; 0 when there are no more.
+  int64 next_before_revision = 2;
+}
+
+message GetRevisionRequest {
+  string namespace = 1;
+  int64 revision = 2;
+}
+
+message GetRevisionResponse {
+  Revision revision = 1;
+}
+
+message DiffRevisionsRequest {
+  string namespace = 1;
+  int64 from_revision = 2;
+  // 0 means the current state.
+  int64 to_revision = 3;
+}
+
+message DiffRevisionsResponse {
+  // What changes going from from_revision to to_revision.
+  repeated Change changes = 1;
+}
+
+message RollbackRequest {
+  string namespace = 1;
+  int64 to_revision = 2;
+  // When non-zero the rollback fails with ABORTED unless the namespace is
+  // still at this revision, so a rollback never silently discards a change
+  // the caller has not seen.
+  int64 expected_revision = 3;
+}
+
+message RollbackResponse {
+  // The new namespace revision, or the current one if nothing had to change.
+  int64 revision = 1;
+  repeated Change changes = 2;
+}
+
+message ListAuditEventsRequest {
+  // All filters are optional and combine with AND.
+  string namespace = 1;
+  string entity_type = 2;
+  string entity_key = 3;
+  string actor = 4;
+  google.protobuf.Timestamp since = 5;
+  google.protobuf.Timestamp until = 6;
+  // 1 to 500; 0 means 50.
+  int32 page_size = 7;
+  // From a previous response's next_page_token.
+  string page_token = 8;
+}
+
+message ListAuditEventsResponse {
+  // Newest first.
+  repeated AuditEvent events = 1;
+  // Empty when there are no more events.
+  string next_page_token = 2;
 }
 
 // DistributionService is what client services talk to.
