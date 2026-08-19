@@ -7,12 +7,18 @@
 // which pushes the new snapshot down every Watch stream for that namespace.
 // A periodic reconciler compares cached revisions against the store so a
 // replica that missed an event still converges.
+//
+// Flag rollouts are read-modify-write cycles with a compare-and-swap on the
+// revision read, so every replica can run the rollout controller that
+// advances due stages: when several race, exactly one write wins and the
+// others skip. Controller advances propagate like any other write.
 package server
 
 import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -21,9 +27,11 @@ import (
 	"google.golang.org/grpc/status"
 
 	cpv1 "github.com/Jenil133/Controlplane/gen/controlplane/v1"
+	"github.com/Jenil133/Controlplane/internal/auth"
 	"github.com/Jenil133/Controlplane/internal/hub"
 	"github.com/Jenil133/Controlplane/internal/model"
 	"github.com/Jenil133/Controlplane/internal/notify"
+	"github.com/Jenil133/Controlplane/internal/rollout"
 	"github.com/Jenil133/Controlplane/internal/store"
 )
 
@@ -46,6 +54,11 @@ type Options struct {
 	// ReconcileInterval is how often cached revisions are checked against the
 	// store. Defaults to 10s.
 	ReconcileInterval time.Duration
+	// RolloutInterval is how often due rollout stages are advanced. Zero
+	// disables the rollout controller on this replica.
+	RolloutInterval time.Duration
+	// Observer receives events for metrics. Defaults to NopObserver.
+	Observer Observer
 }
 
 // Server holds the state shared by both gRPC services.
@@ -55,6 +68,14 @@ type Server struct {
 	log               *slog.Logger
 	hub               *hub.Hub
 	reconcileInterval time.Duration
+	rolloutInterval   time.Duration
+	observer          Observer
+	admin             *adminService
+	distribution      *distributionService
+
+	// now times rollout transitions, both the ones users request and the
+	// controller's. Tests replace it to move rollouts along on demand.
+	now func() time.Time
 }
 
 // New builds a Server. Call Register to expose it and Run to start
@@ -65,6 +86,9 @@ func New(opts Options) *Server {
 		notifier:          opts.Notifier,
 		log:               opts.Logger,
 		reconcileInterval: opts.ReconcileInterval,
+		rolloutInterval:   opts.RolloutInterval,
+		observer:          opts.Observer,
+		now:               func() time.Time { return time.Now().UTC() },
 	}
 	if s.notifier == nil {
 		s.notifier = notify.NewLocal()
@@ -75,20 +99,47 @@ func New(opts Options) *Server {
 	if s.reconcileInterval <= 0 {
 		s.reconcileInterval = defaultReconcileInterval
 	}
+	if s.observer == nil {
+		s.observer = NopObserver{}
+	}
 	s.hub = hub.New(s.loadSnapshot)
+	s.admin = &adminService{Server: s}
+	s.distribution = &distributionService{Server: s}
 	return s
 }
 
 // Register adds both services to g.
 func (s *Server) Register(g grpc.ServiceRegistrar) {
-	cpv1.RegisterAdminServiceServer(g, &adminService{Server: s})
-	cpv1.RegisterDistributionServiceServer(g, &distributionService{Server: s})
+	cpv1.RegisterAdminServiceServer(g, s.admin)
+	cpv1.RegisterDistributionServiceServer(g, s.distribution)
 }
 
-// Run receives change events from other replicas and reconciles periodically
-// until ctx is done.
+// AdminServer returns the AdminService implementation, for in-process
+// callers such as the HTTP API.
+func (s *Server) AdminServer() cpv1.AdminServiceServer { return s.admin }
+
+// DistributionServer returns the DistributionService implementation.
+func (s *Server) DistributionServer() cpv1.DistributionServiceServer { return s.distribution }
+
+// Run receives change events from other replicas, reconciles periodically
+// and, when Options.RolloutInterval is set, advances due rollout stages,
+// until ctx is done. It returns once all of that has stopped.
 func (s *Server) Run(ctx context.Context) error {
-	go s.runNotifier(ctx)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	wg.Go(func() { s.runNotifier(ctx) })
+	if s.rolloutInterval > 0 {
+		controller := rollout.NewController(rollout.ControllerConfig{
+			Store:    s.store,
+			Interval: s.rolloutInterval,
+			Now:      s.now,
+			Logger:   s.log,
+			OnChange: func(ctx context.Context, namespace string, revision int64) {
+				s.changed(ctx, namespace, revision, SourceRollout)
+			},
+		})
+		wg.Go(func() { _ = controller.Run(ctx) })
+	}
 
 	ticker := time.NewTicker(s.reconcileInterval)
 	defer ticker.Stop()
@@ -119,7 +170,7 @@ func (s *Server) runNotifier(ctx context.Context) {
 	for {
 		err := s.notifier.Run(ctx, func(ev notify.Event) {
 			// Loading a snapshot can take a while; never stall the event loop.
-			go s.refresh(context.WithoutCancel(ctx), ev.Namespace, ev.Revision)
+			go s.refresh(context.WithoutCancel(ctx), ev.Namespace, ev.Revision, SourceNotifier)
 		})
 		if ctx.Err() != nil {
 			return
@@ -134,7 +185,8 @@ func (s *Server) runNotifier(ctx context.Context) {
 	}
 }
 
-func (s *Server) refresh(ctx context.Context, namespace string, revision int64) {
+func (s *Server) refresh(ctx context.Context, namespace string, revision int64, source ChangeSource) {
+	s.observer.ChangeReceived(namespace, source)
 	ctx, cancel := context.WithTimeout(ctx, refreshTimeout)
 	defer cancel()
 	if err := s.hub.Notify(ctx, namespace, revision); err != nil {
@@ -155,7 +207,7 @@ func (s *Server) reconcile(ctx context.Context) {
 	for _, ns := range namespaces {
 		if cached, ok := watched[ns.Name]; ok && ns.Revision > cached {
 			s.log.Info("reconcile: watchers behind store, refreshing", "namespace", ns.Name, "cached", cached, "current", ns.Revision)
-			s.refresh(ctx, ns.Name, ns.Revision)
+			s.refresh(ctx, ns.Name, ns.Revision, SourceReconcile)
 		}
 	}
 }
@@ -163,17 +215,18 @@ func (s *Server) reconcile(ctx context.Context) {
 // changed is called after a committed write. Publishing is asynchronous so a
 // slow or unreachable Redis never delays the write; events may then arrive
 // out of order, which is harmless because the hub ignores older revisions.
-func (s *Server) changed(ctx context.Context, namespace string, revision int64) {
+func (s *Server) changed(ctx context.Context, namespace string, revision int64, source ChangeSource) {
 	ctx = context.WithoutCancel(ctx)
 	go s.publish(ctx, namespace, revision)
 	// Local watchers do not wait for the round trip through the notifier.
-	s.refresh(ctx, namespace, revision)
+	s.refresh(ctx, namespace, revision, source)
 }
 
 func (s *Server) publish(ctx context.Context, namespace string, revision int64) {
 	ctx, cancel := context.WithTimeout(ctx, publishTimeout)
 	defer cancel()
 	if err := s.notifier.Publish(ctx, notify.Event{Namespace: namespace, Revision: revision}); err != nil {
+		s.observer.PublishFailed(namespace)
 		s.log.Warn("publish change failed; other replicas will catch up on reconcile", "namespace", namespace, "revision", revision, "error", err)
 	}
 }
@@ -195,6 +248,10 @@ func (s *Server) toStatus(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, model.ErrAlreadyExists):
 		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, model.ErrConflict):
+		return status.Error(codes.Aborted, err.Error())
+	case errors.Is(err, model.ErrFailedPrecondition):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, hub.ErrClosed):
 		return status.Error(codes.Unavailable, "server is shutting down, reconnect")
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -205,8 +262,12 @@ func (s *Server) toStatus(err error) error {
 	}
 }
 
-// actor returns who is making the request, from ActorHeader metadata.
+// actor returns who is making the request: the authenticated principal when
+// auth is enabled, otherwise the ActorHeader metadata (trusted as given).
 func actor(ctx context.Context) (string, error) {
+	if p, ok := auth.PrincipalFrom(ctx); ok {
+		return p.Name, nil
+	}
 	md, _ := metadata.FromIncomingContext(ctx)
 	vals := md.Get(ActorHeader)
 	if len(vals) == 0 || vals[0] == "" {

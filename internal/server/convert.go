@@ -2,8 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -12,7 +14,8 @@ import (
 )
 
 // Values are stored as compact JSON produced by encoding/json (sorted object
-// keys) and travel as google.protobuf.Value.
+// keys) and travel as google.protobuf.Value. So do the entry images in diffs
+// and audit events.
 
 func valueToJSON(field string, v *structpb.Value) (json.RawMessage, error) {
 	if v == nil || v.GetKind() == nil {
@@ -50,6 +53,29 @@ func timestamp(t time.Time) *timestamppb.Timestamp {
 	return timestamppb.New(t)
 }
 
+// optionalTime converts a timestamp field that may be unset (zero time).
+func optionalTime(field string, ts *timestamppb.Timestamp) (time.Time, error) {
+	if ts == nil {
+		return time.Time{}, nil
+	}
+	if err := ts.CheckValid(); err != nil {
+		return time.Time{}, model.Invalidf("%s: %v", field, err)
+	}
+	return ts.AsTime(), nil
+}
+
+// durationFromProto converts a duration field that must be set: an unset
+// duration would otherwise silently read as zero.
+func durationFromProto(field string, d *durationpb.Duration) (time.Duration, error) {
+	if d == nil {
+		return 0, model.Invalidf("%s is required", field)
+	}
+	if err := d.CheckValid(); err != nil {
+		return 0, model.Invalidf("%s: %v", field, err)
+	}
+	return d.AsDuration(), nil
+}
+
 func namespaceToProto(ns model.Namespace) *cpv1.Namespace {
 	return &cpv1.Namespace{
 		Name:        ns.Name,
@@ -57,6 +83,7 @@ func namespaceToProto(ns model.Namespace) *cpv1.Namespace {
 		Revision:    ns.Revision,
 		CreatedAt:   timestamp(ns.CreatedAt),
 		UpdatedAt:   timestamp(ns.UpdatedAt),
+		CreatedBy:   ns.CreatedBy,
 	}
 }
 
@@ -77,13 +104,70 @@ func configToProto(c model.Config) (*cpv1.Config, error) {
 
 func flagToProto(f model.Flag) *cpv1.Flag {
 	return &cpv1.Flag{
-		Key:         f.Key,
-		Enabled:     f.Enabled,
-		Description: f.Description,
-		Revision:    f.Revision,
-		UpdatedAt:   timestamp(f.UpdatedAt),
-		UpdatedBy:   f.UpdatedBy,
+		Key:            f.Key,
+		Enabled:        f.Enabled,
+		Description:    f.Description,
+		Revision:       f.Revision,
+		UpdatedAt:      timestamp(f.UpdatedAt),
+		UpdatedBy:      f.UpdatedBy,
+		RolloutPercent: f.RolloutPercent,
+		Salt:           f.Salt,
+		Allowlist:      f.Allowlist,
+		Rollout:        rolloutPlanToProto(f.Rollout),
 	}
+}
+
+func rolloutPlanToProto(p *model.RolloutPlan) *cpv1.RolloutPlan {
+	if p == nil {
+		return nil
+	}
+	stages := make([]*cpv1.RolloutStage, len(p.Stages))
+	for i, st := range p.Stages {
+		// A zero duration (manual advance only) is sent as 0s rather than
+		// left unset, so every stage reads the same way.
+		stages[i] = &cpv1.RolloutStage{Percent: st.Percent, Duration: durationpb.New(st.Duration)}
+	}
+	return &cpv1.RolloutPlan{
+		Stages:         stages,
+		CurrentStage:   int32(p.CurrentStage),
+		State:          rolloutStateToProto(p.State),
+		StartedAt:      timestamp(p.StartedAt),
+		StageStartedAt: timestamp(p.StageStartedAt),
+		StartedBy:      p.StartedBy,
+	}
+}
+
+func rolloutStateToProto(s model.RolloutState) cpv1.RolloutState {
+	switch s {
+	case model.RolloutActive:
+		return cpv1.RolloutState_ROLLOUT_STATE_ACTIVE
+	case model.RolloutPaused:
+		return cpv1.RolloutState_ROLLOUT_STATE_PAUSED
+	case model.RolloutCompleted:
+		return cpv1.RolloutState_ROLLOUT_STATE_COMPLETED
+	case model.RolloutAborted:
+		return cpv1.RolloutState_ROLLOUT_STATE_ABORTED
+	default:
+		return cpv1.RolloutState_ROLLOUT_STATE_UNSPECIFIED
+	}
+}
+
+// rolloutStagesFromProto converts the stages of a new rollout. An unset stage
+// duration means zero: the stage only advances manually.
+func rolloutStagesFromProto(in []*cpv1.RolloutStage) ([]model.RolloutStage, error) {
+	out := make([]model.RolloutStage, len(in))
+	for i, st := range in {
+		out[i].Percent = st.GetPercent()
+		if st.GetDuration() == nil {
+			continue
+		}
+		d, err := durationFromProto(fmt.Sprintf("stage %d duration", i+1), st.GetDuration())
+		if err != nil {
+			return nil, err
+		}
+		out[i].Duration = d
+	}
+	return out, nil
 }
 
 func experimentToProto(e model.Experiment) (*cpv1.Experiment, error) {
@@ -119,15 +203,46 @@ func variantsFromProto(in []*cpv1.Variant) ([]model.Variant, error) {
 	return out, nil
 }
 
+func rateLimitToProto(r model.RateLimit) *cpv1.RateLimit {
+	return &cpv1.RateLimit{
+		Key:               r.Key,
+		Enabled:           r.Enabled,
+		Description:       r.Description,
+		RequestsPerSecond: r.RequestsPerSecond,
+		Burst:             r.Burst,
+		Revision:          r.Revision,
+		UpdatedAt:         timestamp(r.UpdatedAt),
+		UpdatedBy:         r.UpdatedBy,
+	}
+}
+
+func circuitBreakerToProto(c model.CircuitBreaker) *cpv1.CircuitBreaker {
+	return &cpv1.CircuitBreaker{
+		Key:                  c.Key,
+		Enabled:              c.Enabled,
+		Description:          c.Description,
+		FailureRateThreshold: c.FailureRateThreshold,
+		MinRequests:          c.MinRequests,
+		Window:               durationpb.New(c.Window),
+		OpenDuration:         durationpb.New(c.OpenDuration),
+		HalfOpenMaxRequests:  c.HalfOpenMaxRequests,
+		Revision:             c.Revision,
+		UpdatedAt:            timestamp(c.UpdatedAt),
+		UpdatedBy:            c.UpdatedBy,
+	}
+}
+
 // SnapshotToProto converts a store snapshot for the wire.
 func SnapshotToProto(s model.Snapshot) (*cpv1.Snapshot, error) {
 	out := &cpv1.Snapshot{
-		Namespace:   s.Namespace,
-		Revision:    s.Revision,
-		UpdatedAt:   timestamp(s.UpdatedAt),
-		Configs:     make([]*cpv1.Config, 0, len(s.Configs)),
-		Flags:       make([]*cpv1.Flag, 0, len(s.Flags)),
-		Experiments: make([]*cpv1.Experiment, 0, len(s.Experiments)),
+		Namespace:       s.Namespace,
+		Revision:        s.Revision,
+		UpdatedAt:       timestamp(s.UpdatedAt),
+		Configs:         make([]*cpv1.Config, 0, len(s.Configs)),
+		Flags:           make([]*cpv1.Flag, 0, len(s.Flags)),
+		Experiments:     make([]*cpv1.Experiment, 0, len(s.Experiments)),
+		RateLimits:      make([]*cpv1.RateLimit, 0, len(s.RateLimits)),
+		CircuitBreakers: make([]*cpv1.CircuitBreaker, 0, len(s.CircuitBreakers)),
 	}
 	for _, c := range s.Configs {
 		pc, err := configToProto(c)
@@ -146,5 +261,81 @@ func SnapshotToProto(s model.Snapshot) (*cpv1.Snapshot, error) {
 		}
 		out.Experiments = append(out.Experiments, pe)
 	}
+	for _, r := range s.RateLimits {
+		out.RateLimits = append(out.RateLimits, rateLimitToProto(r))
+	}
+	for _, c := range s.CircuitBreakers {
+		out.CircuitBreakers = append(out.CircuitBreakers, circuitBreakerToProto(c))
+	}
 	return out, nil
+}
+
+// revisionToProto converts a history entry without its snapshot.
+func revisionToProto(r model.Revision) *cpv1.Revision {
+	return &cpv1.Revision{
+		Namespace: r.Namespace,
+		Revision:  r.Revision,
+		Actor:     r.Actor,
+		CreatedAt: timestamp(r.CreatedAt),
+		Summary:   r.Summary,
+	}
+}
+
+func changeTypeToProto(t model.ChangeType) cpv1.ChangeType {
+	switch t {
+	case model.ChangeAdded:
+		return cpv1.ChangeType_CHANGE_TYPE_ADDED
+	case model.ChangeModified:
+		return cpv1.ChangeType_CHANGE_TYPE_MODIFIED
+	case model.ChangeRemoved:
+		return cpv1.ChangeType_CHANGE_TYPE_REMOVED
+	default:
+		return cpv1.ChangeType_CHANGE_TYPE_UNSPECIFIED
+	}
+}
+
+func changesToProto(changes []model.Change) ([]*cpv1.Change, error) {
+	out := make([]*cpv1.Change, len(changes))
+	for i, c := range changes {
+		before, err := jsonToValue(c.Before)
+		if err != nil {
+			return nil, err
+		}
+		after, err := jsonToValue(c.After)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = &cpv1.Change{
+			EntityType: c.EntityType,
+			Key:        c.Key,
+			Type:       changeTypeToProto(c.Type),
+			Before:     before,
+			After:      after,
+		}
+	}
+	return out, nil
+}
+
+func auditEventToProto(e model.AuditEvent) (*cpv1.AuditEvent, error) {
+	before, err := jsonToValue(e.Before)
+	if err != nil {
+		return nil, err
+	}
+	after, err := jsonToValue(e.After)
+	if err != nil {
+		return nil, err
+	}
+	return &cpv1.AuditEvent{
+		Id:         e.ID,
+		Namespace:  e.Namespace,
+		Revision:   e.Revision,
+		Actor:      e.Actor,
+		Time:       timestamp(e.Time),
+		Action:     e.Action,
+		EntityType: e.EntityType,
+		EntityKey:  e.EntityKey,
+		Before:     before,
+		After:      after,
+		Message:    e.Message,
+	}, nil
 }

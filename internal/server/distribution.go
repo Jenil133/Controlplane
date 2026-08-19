@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/peer"
@@ -44,6 +45,9 @@ func (d *distributionService) Watch(req *cpv1.WatchRequest, stream grpc.ServerSt
 		log = log.With("peer", p.Addr.String())
 	}
 	log.Info("watch started", "known_revision", req.GetKnownRevision())
+	d.observer.WatchStarted(req.GetNamespace())
+	defer d.observer.WatchEnded(req.GetNamespace())
+	opened := time.Now()
 
 	for {
 		snap, err := sub.Next(ctx)
@@ -58,6 +62,14 @@ func (d *distributionService) Watch(req *cpv1.WatchRequest, stream grpc.ServerSt
 		if err := stream.Send(&cpv1.WatchResponse{Snapshot: snap}); err != nil {
 			log.Info("watch ended", "reason", err)
 			return err
+		}
+		// Only changes committed after the stream opened count as pushes. The
+		// catch-up snapshot a new or reconnecting watcher gets first was
+		// committed whenever the namespace last changed, so its age says
+		// nothing about propagation and would swamp the lag histogram after
+		// every restart.
+		if committed := snap.GetUpdatedAt().AsTime(); committed.After(opened) {
+			d.observer.SnapshotPushed(req.GetNamespace(), max(0, time.Since(committed)))
 		}
 		log.Debug("snapshot pushed", "revision", snap.GetRevision())
 	}

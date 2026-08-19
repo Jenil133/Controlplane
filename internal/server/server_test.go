@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,9 +18,11 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	cpv1 "github.com/Jenil133/Controlplane/gen/controlplane/v1"
+	"github.com/Jenil133/Controlplane/internal/auth"
 	"github.com/Jenil133/Controlplane/internal/notify"
 	"github.com/Jenil133/Controlplane/internal/store"
 	"github.com/Jenil133/Controlplane/internal/store/memory"
@@ -29,8 +32,11 @@ import (
 // every watcher within this time.
 const propagationBudget = time.Second
 
+var discard = slog.New(slog.DiscardHandler)
+
 type replica struct {
 	srv   *Server
+	conn  *grpc.ClientConn
 	admin cpv1.AdminServiceClient
 	dist  cpv1.DistributionServiceClient
 }
@@ -38,6 +44,11 @@ type replica struct {
 type replicaOptions struct {
 	notifier  notify.Notifier
 	reconcile time.Duration
+	// rollout is the rollout controller's tick interval; zero disables it.
+	rollout  time.Duration
+	now      func() time.Time // replaces the server clock when set
+	observer Observer
+	grpc     []grpc.ServerOption
 }
 
 // startReplica runs a Server over an in-memory gRPC connection.
@@ -46,15 +57,24 @@ func startReplica(t *testing.T, st store.Store, opts replicaOptions) *replica {
 	srv := New(Options{
 		Store:             st,
 		Notifier:          opts.notifier,
-		Logger:            slog.New(slog.DiscardHandler),
+		Logger:            discard,
 		ReconcileInterval: opts.reconcile,
+		RolloutInterval:   opts.rollout,
+		Observer:          opts.observer,
 	})
-	g := grpc.NewServer()
+	if opts.now != nil {
+		srv.now = opts.now
+	}
+	g := grpc.NewServer(opts.grpc...)
 	srv.Register(g)
 
 	lis := bufconn.Listen(1 << 20)
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = srv.Run(ctx) }()
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		_ = srv.Run(ctx)
+	}()
 	go func() { _ = g.Serve(lis) }()
 
 	conn, err := grpc.NewClient("passthrough:///bufconn",
@@ -68,8 +88,53 @@ func startReplica(t *testing.T, st store.Store, opts replicaOptions) *replica {
 		srv.Shutdown()
 		g.Stop()
 		cancel()
+		<-stopped
 	})
-	return &replica{srv: srv, admin: cpv1.NewAdminServiceClient(conn), dist: cpv1.NewDistributionServiceClient(conn)}
+	return &replica{srv: srv, conn: conn, admin: cpv1.NewAdminServiceClient(conn), dist: cpv1.NewDistributionServiceClient(conn)}
+}
+
+// fakeClock is a time source the test moves by hand.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newFakeClock() *fakeClock {
+	return &fakeClock{now: time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)}
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// sourceRecorder counts ChangeReceived events per namespace and source.
+type sourceRecorder struct {
+	NopObserver
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (r *sourceRecorder) ChangeReceived(namespace string, source ChangeSource) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.counts == nil {
+		r.counts = make(map[string]int)
+	}
+	r.counts[namespace+" "+string(source)]++
+}
+
+func (r *sourceRecorder) count(namespace string, source ChangeSource) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.counts[namespace+" "+string(source)]
 }
 
 func ctxAs(t *testing.T, who string) context.Context {
@@ -148,6 +213,118 @@ func recv(t *testing.T, s watchStream, timeout time.Duration) *cpv1.Snapshot {
 	case <-time.After(timeout):
 		t.Fatalf("no snapshot within %v", timeout)
 		return nil
+	}
+}
+
+// snapshotFlag returns flag key of snap, failing the test if it is missing.
+func snapshotFlag(t *testing.T, snap *cpv1.Snapshot, key string) *cpv1.Flag {
+	t.Helper()
+	for _, f := range snap.GetFlags() {
+		if f.GetKey() == key {
+			return f
+		}
+	}
+	t.Fatalf("flag %q missing from snapshot at revision %d", key, snap.GetRevision())
+	return nil
+}
+
+func putFlag(t *testing.T, r *replica, req *cpv1.PutFlagRequest) *cpv1.Flag {
+	t.Helper()
+	resp, err := r.admin.PutFlag(ctxAs(t, "test"), req)
+	if err != nil {
+		t.Fatalf("PutFlag: %v", err)
+	}
+	return resp.GetFlag()
+}
+
+func namespaceRevision(t *testing.T, r *replica, ns string) int64 {
+	t.Helper()
+	resp, err := r.admin.GetNamespace(ctxAs(t, "test"), &cpv1.GetNamespaceRequest{Name: ns})
+	if err != nil {
+		t.Fatalf("GetNamespace: %v", err)
+	}
+	return resp.GetNamespace().GetRevision()
+}
+
+// TestEveryRPCIsImplemented calls each method of both services. Embedding
+// the generated Unimplemented servers would otherwise hide a forgotten one.
+func TestEveryRPCIsImplemented(t *testing.T) {
+	r := startReplica(t, memory.New(), replicaOptions{})
+	for _, desc := range []*grpc.ServiceDesc{&cpv1.AdminService_ServiceDesc, &cpv1.DistributionService_ServiceDesc} {
+		for _, m := range desc.Methods {
+			method := "/" + desc.ServiceName + "/" + m.MethodName
+			// An empty message is a valid encoding of every request type,
+			// and decoding a response into Empty keeps it as unknown fields.
+			err := r.conn.Invoke(ctxAs(t, "test"), method, &emptypb.Empty{}, &emptypb.Empty{})
+			if status.Code(err) == codes.Unimplemented {
+				t.Errorf("%s: %v", method, err)
+			}
+		}
+		for _, sd := range desc.Streams {
+			method := "/" + desc.ServiceName + "/" + sd.StreamName
+			stream, err := r.conn.NewStream(ctxAs(t, "test"), &sd, method)
+			if err == nil {
+				if err = stream.SendMsg(&emptypb.Empty{}); err == nil {
+					if err = stream.CloseSend(); err == nil {
+						err = stream.RecvMsg(&emptypb.Empty{})
+					}
+				}
+			}
+			if status.Code(err) == codes.Unimplemented {
+				t.Errorf("%s: %v", method, err)
+			}
+		}
+	}
+}
+
+// TestPrincipalIsTheActor checks that an authenticated principal, not the
+// unauthenticated actor header, is recorded as the author of changes.
+func TestPrincipalIsTheActor(t *testing.T) {
+	asCarol := func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		return handler(auth.WithPrincipal(ctx, auth.Principal{Name: "carol", Role: auth.RoleAdmin}), req)
+	}
+	r := startReplica(t, memory.New(), replicaOptions{grpc: []grpc.ServerOption{grpc.UnaryInterceptor(asCarol)}})
+	// Even a header that would be rejected on its own is ignored.
+	for _, header := range []string{"mallory", strings.Repeat("x", 200)} {
+		ctx := ctxAs(t, header)
+		name := "svc-" + header[:1]
+		ns, err := r.admin.CreateNamespace(ctx, &cpv1.CreateNamespaceRequest{Name: name})
+		if err != nil {
+			t.Fatalf("CreateNamespace: %v", err)
+		}
+		if got := ns.GetNamespace().GetCreatedBy(); got != "carol" {
+			t.Fatalf("created_by = %q, want carol", got)
+		}
+		f, err := r.admin.PutFlag(ctx, &cpv1.PutFlagRequest{Namespace: name, Key: "f", Enabled: true})
+		if err != nil {
+			t.Fatalf("PutFlag: %v", err)
+		}
+		if got := f.GetFlag().GetUpdatedBy(); got != "carol" {
+			t.Fatalf("updated_by = %q, want carol", got)
+		}
+		started, err := r.admin.StartRollout(ctx, &cpv1.StartRolloutRequest{Namespace: name, Flag: "f", Stages: []*cpv1.RolloutStage{{Percent: 10}, {Percent: 100}}})
+		if err != nil {
+			t.Fatalf("StartRollout: %v", err)
+		}
+		if p := started.GetFlag().GetRollout(); p.GetStartedBy() != "carol" || started.GetFlag().GetUpdatedBy() != "carol" {
+			t.Fatalf("rollout started by %q, flag updated by %q; want carol", p.GetStartedBy(), started.GetFlag().GetUpdatedBy())
+		}
+		revs, err := r.admin.ListRevisions(ctx, &cpv1.ListRevisionsRequest{Namespace: name})
+		if err != nil {
+			t.Fatalf("ListRevisions: %v", err)
+		}
+		events, err := r.admin.ListAuditEvents(ctx, &cpv1.ListAuditEventsRequest{Namespace: name})
+		if err != nil {
+			t.Fatalf("ListAuditEvents: %v", err)
+		}
+		if len(revs.GetRevisions()) != 3 || len(events.GetEvents()) != 3 {
+			t.Fatalf("got %d revisions and %d audit events, want 3 each", len(revs.GetRevisions()), len(events.GetEvents()))
+		}
+		for i := range 3 {
+			if a, b := revs.GetRevisions()[i].GetActor(), events.GetEvents()[i].GetActor(); a != "carol" || b != "carol" {
+				t.Fatalf("revision actor %q, audit actor %q; want carol", a, b)
+			}
+		}
 	}
 }
 
@@ -388,5 +565,53 @@ func TestSlowNotifierDoesNotDelayWrites(t *testing.T) {
 	// Watchers on the same replica are still served immediately.
 	if got := recv(t, stream, propagationBudget).GetRevision(); got != rev {
 		t.Fatalf("local watcher got revision %d, want %d", got, rev)
+	}
+}
+
+// pushRecorder records the lag of every snapshot push and signals when the
+// last watch has ended, after which the recording is final.
+type pushRecorder struct {
+	NopObserver
+	mu    sync.Mutex
+	lags  []time.Duration
+	ended chan struct{}
+}
+
+func (p *pushRecorder) SnapshotPushed(_ string, lag time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.lags = append(p.lags, lag)
+}
+
+func (p *pushRecorder) WatchEnded(string) { close(p.ended) }
+
+// TestPushLagIgnoresCatchUpSnapshot checks that only snapshots committed
+// after a stream opened are reported as pushes: the catch-up snapshot of a
+// new watcher says how old the namespace is, not how fast changes propagate.
+func TestPushLagIgnoresCatchUpSnapshot(t *testing.T) {
+	rec := &pushRecorder{ended: make(chan struct{})}
+	r := startReplica(t, memory.New(), replicaOptions{observer: rec})
+	createNamespace(t, r, "svc")
+	putConfig(t, r, "svc", "k", "v1")
+
+	stream := watch(t, r, "svc", 0)
+	recv(t, stream, propagationBudget) // catch-up
+	rev := putConfig(t, r, "svc", "k", "v2")
+	if got := recv(t, stream, propagationBudget).GetRevision(); got != rev {
+		t.Fatalf("pushed revision %d, want %d", got, rev)
+	}
+
+	// The handler records a push right after sending it and before it waits
+	// for the next one, so ending the watch makes the recording final.
+	r.srv.Shutdown()
+	select {
+	case <-rec.ended:
+	case <-time.After(propagationBudget):
+		t.Fatal("watch did not end")
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.lags) != 1 || rec.lags[0] < 0 || rec.lags[0] > propagationBudget {
+		t.Fatalf("push lags = %v, want exactly one (the live push) within %v", rec.lags, propagationBudget)
 	}
 }

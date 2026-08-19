@@ -21,6 +21,12 @@ const migrationLockID = 0x636f6e74726f6c // "control"
 // Migrate applies any migrations that have not run yet. Each file runs in its
 // own transaction and is recorded in schema_migrations.
 func (s *Store) Migrate(ctx context.Context) error {
+	return s.migrate(ctx, "")
+}
+
+// migrate applies pending migrations in order, stopping after version last
+// when it is set (tests use that to build the schema of an older release).
+func (s *Store) migrate(ctx context.Context, last string) error {
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire connection: %w", err)
@@ -58,23 +64,28 @@ func (s *Store) Migrate(ctx context.Context) error {
 	slices.Sort(files)
 	for _, file := range files {
 		version := strings.TrimSuffix(strings.TrimPrefix(file, "migrations/"), ".sql")
-		if slices.Contains(applied, version) {
-			continue
-		}
-		sql, err := migrationFS.ReadFile(file)
-		if err != nil {
-			return err
-		}
-		err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, string(sql)); err != nil {
+		if !slices.Contains(applied, version) {
+			sql, err := migrationFS.ReadFile(file)
+			if err != nil {
 				return err
 			}
-			_, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version)
-			return err
-		})
-		if err != nil {
-			return fmt.Errorf("apply migration %s: %w", version, err)
+			err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(ctx, string(sql)); err != nil {
+					return err
+				}
+				_, err := tx.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version)
+				return err
+			})
+			if err != nil {
+				return fmt.Errorf("apply migration %s: %w", version, err)
+			}
 		}
+		if version == last {
+			return nil
+		}
+	}
+	if last != "" {
+		return fmt.Errorf("unknown migration %s", last)
 	}
 	return nil
 }
