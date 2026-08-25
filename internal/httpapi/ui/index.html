@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Controlplane</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"></div>
+  <header class="topbar">
+    <a class="brand" href="#/">
+      <img class="brand-mark" src="favicon.svg" alt="" width="22" height="22">
+      <span>Controlplane</span>
+    </a>
+    <div class="session">
+      <label class="session-field">
+        <span>Actor</span>
+        <input id="actor" type="text" autocomplete="off" spellcheck="false" maxlength="128"
+          placeholder="recorded with changes when auth is off">
+      </label>
+      <label class="session-field">
+        <span>API token</span>
+        <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="cp_…">
+      </label>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" aria-label="Namespaces">
+      <div class="sidebar-head">
+        <h2>Namespaces</h2>
+        <button id="ns-reload" type="button" class="ghost small" title="Reload the namespace list">Reload</button>
+      </div>
+      <ul id="ns-list" class="ns-list"></ul>
+      <p id="ns-empty" class="muted small" hidden>No namespaces yet.</p>
+      <details class="ns-create">
+        <summary>New namespace</summary>
+        <form id="ns-create" autocomplete="off">
+          <fieldset>
+            <label class="field">
+              <span class="label">Name</span>
+              <input name="name" type="text" required maxlength="128" spellcheck="false" placeholder="checkout/prod">
+            </label>
+            <label class="field">
+              <span class="label">Description</span>
+              <input name="description" type="text" maxlength="1024">
+            </label>
+            <button type="submit" class="primary">Create namespace</button>
+          </fieldset>
+        </form>
+      </details>
+    </aside>
+
+    <main class="content">
+      <div id="banner" class="banner" role="alert" hidden>
+        <div id="banner-text" class="banner-text"></div>
+        <button id="banner-close" type="button" class="ghost small" aria-label="Dismiss">Dismiss</button>
+      </div>
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+      <section id="welcome" class="welcome">
+        <h1>Controlplane</h1>
+        <p class="muted">Configs, feature flags, experiments and traffic policies, pushed to every client in under a second.</p>
+        <p class="muted">Pick a namespace on the left or create one. If the server has auth enabled, paste an API token at the top right first.</p>
+      </section>
+
+      <section id="ns-view" hidden>
+        <header class="ns-header">
+          <div class="ns-heading">
+            <h1 id="ns-title"></h1>
+            <p id="ns-description" class="muted"></p>
+          </div>
+          <div class="ns-side">
+            <div id="ns-meta" class="ns-meta"></div>
+            <button id="ns-refresh" type="button">Refresh</button>
+          </div>
+        </header>
+        <div id="ns-stale" class="stale" role="status" hidden>
+          <span id="ns-stale-text"></span>
+          <button id="ns-stale-reload" type="button" class="small">Load it</button>
+        </div>
+        <nav id="tabs" class="tabs" role="tablist" aria-label="Namespace sections"></nav>
+        <div id="panel" class="panel" role="tabpanel"></div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
