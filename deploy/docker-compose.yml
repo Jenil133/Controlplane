@@ -5,7 +5,12 @@
 #
 #   docker compose -f deploy/docker-compose.yml --profile replicas up -d --build --wait
 #       Also two control plane replicas sharing Postgres and Redis:
-#       replica a on gRPC :9090, replica b on gRPC :9091.
+#       replica a on gRPC :9090 and HTTP :8080, replica b on gRPC :9091 and
+#       HTTP :8081. HTTP serves the admin UI at /ui/, the JSON API under
+#       /api/v1/, /metrics, /healthz and /readyz.
+#
+# Authentication is off: anyone who can reach these ports can change
+# anything. controlplane-a below shows how to turn it on.
 name: controlplane
 
 services:
@@ -43,6 +48,21 @@ services:
       CONTROLPLANE_DATABASE_URL: postgres://controlplane:controlplane@postgres:5432/controlplane?sslmode=disable
       CONTROLPLANE_REDIS_URL: redis://redis:6379/0
       CONTROLPLANE_LOG_FORMAT: text
+      # Both replicas run the rollout controller; compare-and-set writes make
+      # each stage advance happen exactly once.
+      CONTROLPLANE_ROLLOUT_INTERVAL: 5s
+      # To turn authentication on, for both replicas:
+      #   1. make token, and save the entry it prints in deploy/tokens.json as
+      #      {"tokens": [<entry>]}. The file holds only the token's hash, so
+      #      it may be world-readable, which the container's user 65532 needs.
+      #   2. Uncomment the two variables below, with the token printed in
+      #      step 1 as CPCTL_TOKEN for the healthcheck, and the volumes block.
+      #   3. Send the token as "authorization: Bearer <token>": cpctl --token,
+      #      or the token field of the admin UI.
+      # CONTROLPLANE_AUTH_TOKENS_FILE: /etc/controlplane/tokens.json
+      # CPCTL_TOKEN: cp_...
+    # volumes:
+    #   - ./tokens.json:/etc/controlplane/tokens.json:ro
     depends_on:
       postgres:
         condition: service_healthy

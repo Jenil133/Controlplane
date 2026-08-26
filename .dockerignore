@@ -1,7 +1,12 @@
-.git
-bin
-dist
-plan
-deploy
-*.test
-*.out
+# The build context is an allowlist of what the image is compiled from, so
+# stray binaries, local env files, tokens and the like never reach the
+# builder. A new top-level source directory the build needs goes here too.
+*
+!go.mod
+!go.sum
+!cmd
+!gen
+!internal
+!pkg
+**/*_test.go
+**/testdata

@@ -10,7 +10,10 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/controlplane ./cmd
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/controlplane /out/cpctl /usr/local/bin/
-# 9090: gRPC (admin + distribution), 8080: /healthz and /readyz
+# 9090: gRPC (AdminService, DistributionService, health, reflection)
+# 8080: HTTP (JSON API, admin UI at /ui/, /metrics, /healthz, /readyz)
 EXPOSE 9090 8080
-USER nonroot:nonroot
+# distroless's nonroot user, by number: Kubernetes can only verify
+# runAsNonRoot against a numeric user.
+USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/controlplane"]
