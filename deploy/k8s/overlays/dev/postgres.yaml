@@ -1,0 +1,91 @@
+# Throwaway single-instance PostgreSQL for development. Its volume claim is
+# removed with the namespace.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        # The image's "postgres" user. Started as root, the entrypoint would
+        # chown the data directory and switch users, which needs capabilities
+        # that are dropped here.
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: postgres
+          env:
+            # initdb refuses a non-empty directory, and a fresh volume's root
+            # may already hold lost+found.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          # Over TCP, not the Unix socket: first-boot initialisation runs a
+          # temporary socket-only server that must not count as ready. There
+          # is no liveness probe because a restart in the middle of initdb
+          # would leave a half-initialised data directory.
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "controlplane", "-d", "controlplane"]
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi

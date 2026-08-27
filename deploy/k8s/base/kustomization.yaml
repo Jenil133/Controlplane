@@ -1,0 +1,43 @@
+# The control plane server. Overlays add the namespace and a Secret named
+# controlplane-secrets with these keys:
+#
+#   database-url  PostgreSQL URL (CONTROLPLANE_DATABASE_URL)
+#   redis-url     Redis URL for cross-replica change events (CONTROLPLANE_REDIS_URL)
+#   tokens.json   API tokens, {"tokens":[{"name":..,"role":..,"token_sha256":..}]},
+#                 mounted at /etc/controlplane/tokens.json
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - serviceaccount.yaml
+  - deployment.yaml
+  - service.yaml
+  - pdb.yaml
+  - hpa.yaml
+
+images:
+  - name: ghcr.io/jenil133/controlplane
+    newTag: latest
+
+configMapGenerator:
+  # Non-secret settings, read by the server from its environment. The
+  # generated name carries a hash of the values, so changing one rolls the
+  # pods instead of leaving them on stale settings.
+  - name: controlplane-config
+    literals:
+      - CONTROLPLANE_GRPC_ADDR=:9090
+      - CONTROLPLANE_HTTP_ADDR=:8080
+      - CONTROLPLANE_STORE=postgres
+      # Every replica migrates on startup; a PostgreSQL advisory lock makes
+      # replicas starting together take turns.
+      - CONTROLPLANE_MIGRATE=true
+      - CONTROLPLANE_AUTH_TOKENS_FILE=/etc/controlplane/tokens.json
+      - CONTROLPLANE_RECONCILE_INTERVAL=10s
+      # Every replica runs the rollout controller; compare-and-set writes
+      # make each stage advance happen exactly once.
+      - CONTROLPLANE_ROLLOUT_INTERVAL=5s
+      # Shutdown waits up to this long for gRPC, then again for HTTP. Twice
+      # this plus the 5s preStop sleep must fit in the 30s grace period.
+      - CONTROLPLANE_SHUTDOWN_TIMEOUT=10s
+      - CONTROLPLANE_LOG_FORMAT=json
+      - CONTROLPLANE_LOG_LEVEL=info

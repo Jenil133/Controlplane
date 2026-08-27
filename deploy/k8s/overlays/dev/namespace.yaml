@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: controlplane-dev
+  labels:
+    # Every pod here, PostgreSQL and Redis included, meets the restricted
+    # Pod Security Standard; enforcing it keeps it that way.
+    pod-security.kubernetes.io/enforce: restricted

@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: controlplane
+  labels:
+    app.kubernetes.io/name: controlplane
+spec:
+  selector:
+    app.kubernetes.io/name: controlplane
+  ports:
+    - name: grpc
+      port: 9090
+      targetPort: grpc
+      # Cleartext HTTP/2, so L7 proxies and gateways speak gRPC to the pods.
+      appProtocol: kubernetes.io/h2c
+    - name: http
+      port: 8080
+      targetPort: http
+      appProtocol: http

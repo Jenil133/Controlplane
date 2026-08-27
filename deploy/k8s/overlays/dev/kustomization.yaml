@@ -1,0 +1,80 @@
+# Development: two server replicas plus throwaway PostgreSQL and Redis, all
+# in namespace controlplane-dev.
+#
+#   make docker                                # builds controlplane:dev
+#   kind load docker-image controlplane:dev    # or: minikube image load controlplane:dev
+#   kubectl apply -k deploy/k8s/overlays/dev
+#   kubectl -n controlplane-dev port-forward svc/controlplane 9090 8080
+#
+# On first boot the server pods restart until PostgreSQL accepts
+# connections. kubectl delete -k deletes the namespace and its data.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: controlplane-dev
+
+resources:
+  - namespace.yaml
+  - ../../base
+  - postgres.yaml
+  - redis.yaml
+
+images:
+  # The locally built image: CI does not publish one.
+  - name: ghcr.io/jenil133/controlplane
+    newName: controlplane
+    newTag: dev
+
+configMapGenerator:
+  - name: controlplane-config
+    behavior: merge
+    literals:
+      - CONTROLPLANE_LOG_FORMAT=text
+      - CONTROLPLANE_LOG_LEVEL=debug
+
+# ---------------------------------------------------------------------------
+# DEV-ONLY CREDENTIALS. Everything in this block is published in the
+# repository and protects nothing. Never reuse any of it outside a throwaway
+# local cluster.
+#
+# tokens.json holds only token hashes. The plaintext dev token for its single
+# entry (name dev-admin, role admin) is:
+#
+#   cp_dev-only-admin-token-not-for-production-000
+#
+# Send it as "authorization: Bearer <token>" (cpctl --token or CPCTL_TOKEN).
+# ---------------------------------------------------------------------------
+secretGenerator:
+  - name: controlplane-secrets
+    files:
+      - tokens.json
+    literals:
+      - database-url=postgres://controlplane:dev-only-password@postgres:5432/controlplane?sslmode=disable
+      - redis-url=redis://redis:6379/0
+  - name: postgres
+    literals:
+      - POSTGRES_USER=controlplane
+      - POSTGRES_PASSWORD=dev-only-password
+      - POSTGRES_DB=controlplane
+
+patches:
+  # With two replicas, the base budget of two would block every node drain.
+  - target:
+      kind: PodDisruptionBudget
+      name: controlplane
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 1
+  # The two server replicas: the HPA owns the replica count and holds it at
+  # this minimum even without a metrics server.
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: controlplane
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 2
+      - op: replace
+        path: /spec/maxReplicas
+        value: 4

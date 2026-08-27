@@ -1,0 +1,15 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: controlplane
+  labels:
+    app.kubernetes.io/name: controlplane
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: controlplane
+  # Evicting a pod that is not ready costs no capacity, so it need not wait
+  # for the budget. Otherwise a broken rollout that leaves fewer than two
+  # pods ready would also block every node drain.
+  unhealthyPodEvictionPolicy: AlwaysAllow

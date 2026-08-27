@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controlplane
+  labels:
+    app.kubernetes.io/name: controlplane
+spec:
+  # No replica count: the HPA sets it. With one here, every kubectl apply
+  # would shrink a scaled-out Deployment back to that count at once, and
+  # the Watch clients of all removed pods would reconnect together.
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: controlplane
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: controlplane
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: controlplane
+      automountServiceAccountToken: false
+      # Service links would inject CONTROLPLANE_SERVICE_* and
+      # CONTROLPLANE_PORT_* variables into the server's own env prefix.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # The image's USER is the name "nonroot"; the kubelet can only check
+        # runAsNonRoot against a numeric ID.
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          # Prefer spreading, but never leave a pod the HPA asked for Pending.
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: controlplane
+          # Spread each ReplicaSet on its own so a rolling update is not
+          # skewed by the pods it is replacing.
+          matchLabelKeys:
+            - pod-template-hash
+      containers:
+        - name: controlplane
+          image: ghcr.io/jenil133/controlplane
+          ports:
+            - name: grpc
+              containerPort: 9090
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: controlplane-config
+          env:
+            - name: CONTROLPLANE_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-secrets
+                  key: database-url
+            - name: CONTROLPLANE_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-secrets
+                  key: redis-url
+          volumeMounts:
+            - name: auth-tokens
+              mountPath: /etc/controlplane
+              readOnly: true
+          # HTTP comes up only after the store is connected (up to 30s) and
+          # migrated; hold off the liveness probe until then.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            # /readyz pings the store with a 2s budget.
+            timeoutSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          lifecycle:
+            # Keep serving while the endpoint removal reaches kube-proxy and
+            # load balancers; only then does SIGTERM end the Watch streams so
+            # clients reconnect to the remaining replicas. The image is
+            # distroless (no shell), hence the built-in sleep action.
+            preStop:
+              sleep:
+                seconds: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            # No CPU limit: throttling would delay snapshot pushes, and the
+            # HPA scales on the request instead.
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: auth-tokens
+          secret:
+            secretName: controlplane-secrets
+            items:
+              - key: tokens.json
+                path: tokens.json
+            defaultMode: 288 # 0440: readable through fsGroup only

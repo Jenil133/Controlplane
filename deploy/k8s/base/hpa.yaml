@@ -1,0 +1,32 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: controlplane
+  labels:
+    app.kubernetes.io/name: controlplane
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: controlplane
+  # The Deployment sets no replica count, so this is also its baseline: a
+  # new Deployment starts at one pod and the HPA raises it to this minimum
+  # on its first sync, with or without metrics.
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    # Removing a replica ends its Watch streams and all of its clients
+    # reconnect at once, so shrink one pod at a time.
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
