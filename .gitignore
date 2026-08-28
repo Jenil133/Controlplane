@@ -1,6 +1,11 @@
 # build output and locally installed tools
 /bin/
 /dist/
+# binaries from a bare `go build ./cmd/...` run in the repo root
+/controlplane
+/cpctl
+/cpload
+/checkout
 
 # test artifacts
 *.test
