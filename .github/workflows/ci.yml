@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A new push to a pull request supersedes its running checks; runs on main
+  # always finish so every commit there gets a result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    # Explicit bash adds -o pipefail to the runner's default -e.
+    shell: bash
+
+jobs:
+  test:
+    name: Vet, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: controlplane
+          POSTGRES_PASSWORD: controlplane
+          POSTGRES_DB: controlplane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U controlplane -d controlplane"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      # For tests against a real Redis; today's suites use miniredis.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      # Without it the PostgreSQL store tests skip themselves.
+      CONTROLPLANE_TEST_DATABASE_URL: postgres://controlplane:controlplane@localhost:5432/controlplane?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: go vet
+        run: go vet ./...
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::files need gofmt"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: go test
+        run: go test -race -count=1 ./...
+      - name: go build
+        run: go build ./...
+
+  generated:
+    name: Generated code is current
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # The protoc release that produced gen/: its files' headers name
+      # "protoc v7.35.0", which is release 35.0. Plugin versions are pinned in
+      # the Makefile.
+      PROTOC_VERSION: "35.0"
+      PROTOC_SHA256: a45cda0989c17dd950db55f6fbe1e5814c50fda08e87aa422980ac1f89dddbbc
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install protoc
+        run: |
+          zip="$RUNNER_TEMP/protoc.zip"
+          curl -fsSL -o "$zip" "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          echo "${PROTOC_SHA256}  ${zip}" | sha256sum --check --strict
+          sudo unzip -q -o "$zip" -d /usr/local bin/protoc 'include/*'
+          if [ "$(protoc --version)" != "libprotoc ${PROTOC_VERSION}" ]; then
+            echo "::error::expected libprotoc ${PROTOC_VERSION} first on PATH, got $(protoc --version)"
+            exit 1
+          fi
+      - name: Regenerate
+        run: make tools proto
+      - name: Check for drift
+        run: |
+          git diff --exit-code -- gen/
+          untracked="$(git ls-files --others --exclude-standard -- gen/)"
+          if [ -n "$untracked" ]; then
+            echo "::error::generated files are not committed"
+            echo "$untracked"
+            exit 1
+          fi
+
+  docker:
+    name: Container image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: docker build
+        run: docker build -t controlplane:ci .
+
+  manifests:
+    name: Kubernetes manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KUBECTL_VERSION: v1.36.1
+      KUBECONFORM_VERSION: v0.8.0
+      KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-kubectl@v5
+        with:
+          version: ${{ env.KUBECTL_VERSION }}
+      # Builds the server whose flags the environment check reads.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install kubeconform
+        run: |
+          tgz="$RUNNER_TEMP/kubeconform.tar.gz"
+          curl -fsSL -o "$tgz" "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  ${tgz}" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$tgz" -C "$RUNNER_TEMP/bin" kubeconform
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Render and validate overlays
+        run: |
+          for overlay in dev prod; do
+            kubectl kustomize "deploy/k8s/overlays/${overlay}" > "$RUNNER_TEMP/${overlay}.yaml"
+            # Strict: unknown fields are errors, not silently dropped. 1.30 is
+            # the oldest Kubernetes with the preStop sleep action on by default.
+            kubeconform -strict -summary -kubernetes-version 1.30.0 "$RUNNER_TEMP/${overlay}.yaml"
+          done
+      # kubeconform accepts any env name and the server ignores names it does
+      # not read, so a misspelt CONTROLPLANE_* variable would pass the step
+      # above and leave the server on a default. jq comes with the runner
+      # image.
+      - name: Check server environment against its flags
+        run: bash deploy/k8s/check-env.sh
